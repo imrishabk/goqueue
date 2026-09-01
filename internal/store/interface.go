@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/imrishabk/goqueue/internal/model"
 )
 
 // Store collects all the CRUD of components
@@ -21,11 +22,25 @@ type JobStore interface {
 	JobReader
 	JobUpdater
 	JobDeleter
+	JobClaimer
+	JobCompleter
+}
+
+type JobClaimer interface {
+	ClaimNextJob(ctx context.Context, workerID string, capabilities []string) (*model.Job, error)
+}
+
+type JobCompleter interface {
+	CompleteJob(ctx context.Context, jobID uuid.UUID, workerID string) (*model.Job, error)
+	FailJob(ctx context.Context, jobID uuid.UUID, workerID string, errorMsg string) (*model.Job, error)
 }
 
 type JobFilter struct {
-	Status        []JobStatus
-	Priority      *int16
+	Status []model.JobStatus
+	// Type filters by exact job type; single value for MVP (comma-separated multi-type deferred to v2
+	// to keep parity with Status []JobStatus intentional — Status often queried as set, Type as single)
+	Type     *string
+	Priority *int16
 	CreatedFrom   *time.Time
 	CreatedTo     *time.Time
 	ScheduledFrom *time.Time
@@ -35,7 +50,7 @@ type JobFilter struct {
 }
 
 type JobUpdate struct {
-	Status      *JobStatus
+	Status      *model.JobStatus
 	Priority    *int16
 	MaxAttempts *int16
 	CompletedAt *time.Time
@@ -43,16 +58,16 @@ type JobUpdate struct {
 }
 
 type JobCreator interface {
-	CreateJob(ctx context.Context, job *Job) (*Job, error)
+	CreateJob(ctx context.Context, job *model.Job) (*model.Job, error)
 }
 
 type JobReader interface {
-	GetJob(ctx context.Context, jobID uuid.UUID) (*Job, error)
-	ListJobs(ctx context.Context, filter JobFilter, page Pagination) ([]Job, error)
+	GetJob(ctx context.Context, jobID uuid.UUID) (*model.Job, error)
+	ListJobs(ctx context.Context, filter JobFilter, page Pagination) ([]model.Job, error)
 }
 
 type JobUpdater interface {
-	UpdateJob(ctx context.Context, jobID uuid.UUID, update JobUpdate) (*Job, error)
+	UpdateJob(ctx context.Context, jobID uuid.UUID, update JobUpdate) (*model.Job, error)
 }
 
 type JobDeleter interface {
@@ -88,16 +103,16 @@ type JobAttemptUpdate struct {
 }
 
 type JobAttemptCreator interface {
-	CreateJobAttempt(ctx context.Context, jobAttempt *JobAttempt) (*JobAttempt, error)
+	CreateJobAttempt(ctx context.Context, jobAttempt *model.JobAttempt) (*model.JobAttempt, error)
 }
 
 type JobAttemptReader interface {
-	GetJobAttempt(ctx context.Context, attemptID uuid.UUID) (*JobAttempt, error)
-	ListJobAttempts(ctx context.Context, filter JobAttemptFilter, page Pagination) ([]JobAttempt, error)
+	GetJobAttempt(ctx context.Context, attemptID uuid.UUID) (*model.JobAttempt, error)
+	ListJobAttempts(ctx context.Context, filter JobAttemptFilter, page Pagination) ([]model.JobAttempt, error)
 }
 
 type JobAttemptUpdater interface {
-	UpdateJobAttempt(ctx context.Context, jobAttemptID uuid.UUID, update JobAttemptUpdate) (*JobAttempt, error)
+	UpdateJobAttempt(ctx context.Context, jobAttemptID uuid.UUID, update JobAttemptUpdate) (*model.JobAttempt, error)
 }
 
 type JobAttemptDeleter interface {
@@ -110,12 +125,17 @@ type WorkerStore interface {
 	WorkerReader
 	WorkerUpdater
 	WorkerDeleter
+	WorkerLiveness
+}
+
+type WorkerLiveness interface {
+	SweepDeadWorkers(ctx context.Context, deadBefore time.Time) (deadWorkers int, requeuedJobs int, err error)
 }
 
 type WorkerFilter struct {
 	ID                []string
 	Hostname          []string
-	Status            *WorkerStatus
+	Status            *model.WorkerStatus
 	LastHeartbeatFrom *time.Time
 	LastHeartbeatTo   *time.Time
 	RegisteredFrom    *time.Time
@@ -125,22 +145,22 @@ type WorkerFilter struct {
 type WorkerUpdate struct {
 	ID            *string
 	Hostname      *string
-	Status        *WorkerStatus
+	Status        *model.WorkerStatus
 	LastHeartbeat *time.Time
 	RegisterdAt   *time.Time
 }
 
 type WorkerCreator interface {
-	CreateWorker(ctx context.Context, worker *Worker) (*Worker, error)
+	CreateWorker(ctx context.Context, worker *model.Worker) (*model.Worker, error)
 }
 
 type WorkerReader interface {
-	GetWorker(ctx context.Context, workerID string) (*Worker, error)
-	ListWorkers(ctx context.Context, filter WorkerFilter, page Pagination) ([]Worker, error)
+	GetWorker(ctx context.Context, workerID string) (*model.Worker, error)
+	ListWorkers(ctx context.Context, filter WorkerFilter, page Pagination) ([]model.Worker, error)
 }
 
 type WorkerUpdater interface {
-	UpdateWorker(ctx context.Context, workerID string, update WorkerUpdate) (*Worker, error)
+	UpdateWorker(ctx context.Context, workerID string, update WorkerUpdate) (*model.Worker, error)
 }
 
 type WorkerDeleter interface {

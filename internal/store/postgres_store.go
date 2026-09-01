@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/imrishabk/goqueue/internal/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,13 +17,33 @@ type pgStore struct {
 	pool *pgxpool.Pool
 }
 
+const jobClaimOrderBy = "ORDER BY priority DESC, scheduled_at ASC, created_at ASC"
+
+// withTx runs fn in a transaction, handling Begin/Rollback/Commit.
+// Used to avoid Divergent Change duplication between CompleteJob/FailJob/ClaimNextJob.
+func (pg *pgStore) withTx(ctx context.Context, fn func(tx pgx.Tx) (*model.Job, error)) (*model.Job, error) {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	job, err := fn(tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
 // NewPGStore creates a new Store instance
 func NewPGStore(p *pgxpool.Pool) Store {
 	return &pgStore{pool: p}
 }
 
 // CreateJob registers a new job in the jobs table.
-func (pg *pgStore) CreateJob(ctx context.Context, job *Job) (*Job, error) {
+func (pg *pgStore) CreateJob(ctx context.Context, job *model.Job) (*model.Job, error) {
 	query := `
 	INSERT INTO jobs (type, payload, status, priority, max_attempts, attempt_count, scheduled_at)
 	VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *;
@@ -37,7 +59,7 @@ func (pg *pgStore) CreateJob(ctx context.Context, job *Job) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	created, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Job])
+	created, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
 	if err != nil {
 		return nil, err
 	}
@@ -45,10 +67,10 @@ func (pg *pgStore) CreateJob(ctx context.Context, job *Job) (*Job, error) {
 }
 
 // CreateJobAttempt registers new job attempt in the job attempt table.
-func (pg *pgStore) CreateJobAttempt(ctx context.Context, jobAttempt *JobAttempt) (*JobAttempt, error) {
+func (pg *pgStore) CreateJobAttempt(ctx context.Context, jobAttempt *model.JobAttempt) (*model.JobAttempt, error) {
 	query := `
-	INSERT INTO job_attempts (job_id, worker_id, started_at, finished_at, success, error, duration_ms)
-	VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *;
+	INSERT INTO job_attempts (job_id, worker_id, started_at, finished_at, success, error)
+	VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
 	`
 	rows, err := pg.pool.Query(ctx, query,
 		jobAttempt.JobID,
@@ -56,12 +78,11 @@ func (pg *pgStore) CreateJobAttempt(ctx context.Context, jobAttempt *JobAttempt)
 		jobAttempt.StartedAt,
 		jobAttempt.FinishedAt,
 		jobAttempt.Success,
-		jobAttempt.Error,
-		jobAttempt.DurationMS)
+		jobAttempt.Error)
 	if err != nil {
 		return nil, err
 	}
-	created, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[JobAttempt])
+	created, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.JobAttempt])
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +90,7 @@ func (pg *pgStore) CreateJobAttempt(ctx context.Context, jobAttempt *JobAttempt)
 }
 
 // CreateWorker creates a new worker in the worker table.
-func (pg *pgStore) CreateWorker(ctx context.Context, worker *Worker) (*Worker, error) {
+func (pg *pgStore) CreateWorker(ctx context.Context, worker *model.Worker) (*model.Worker, error) {
 	query := `
 	INSERT INTO workers (id, hostname, status, capabilities, last_heartbeat)
 	VALUES ($1, $2, $3, $4, $5) RETURNING *;
@@ -83,7 +104,7 @@ func (pg *pgStore) CreateWorker(ctx context.Context, worker *Worker) (*Worker, e
 	if err != nil {
 		return nil, err
 	}
-	created, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Worker])
+	created, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Worker])
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +112,7 @@ func (pg *pgStore) CreateWorker(ctx context.Context, worker *Worker) (*Worker, e
 }
 
 // GetJob retrieves job.
-func (pg *pgStore) GetJob(ctx context.Context, jobID uuid.UUID) (*Job, error) {
+func (pg *pgStore) GetJob(ctx context.Context, jobID uuid.UUID) (*model.Job, error) {
 	query := `
 	SELECT * FROM jobs WHERE id = $1;
 	`
@@ -99,15 +120,18 @@ func (pg *pgStore) GetJob(ctx context.Context, jobID uuid.UUID) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Job])
+	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return job, nil
 }
 
 // ListJobs retrieves all the jobs with the filter. Check out JobFilter.
-func (pg *pgStore) ListJobs(ctx context.Context, filter JobFilter, page Pagination) ([]Job, error) {
+func (pg *pgStore) ListJobs(ctx context.Context, filter JobFilter, page Pagination) ([]model.Job, error) {
 	var (
 		conditions []string
 		args       []any
@@ -128,6 +152,9 @@ func (pg *pgStore) ListJobs(ctx context.Context, filter JobFilter, page Paginati
 			argPos++
 		}
 		conditions = append(conditions, fmt.Sprintf("status IN (%s)", strings.Join(placeHolders, ", ")))
+	}
+	if filter.Type != nil {
+		addConditions("type = $%d", *filter.Type)
 	}
 	if filter.Priority != nil {
 		addConditions("priority = $%d", *filter.Priority)
@@ -162,21 +189,216 @@ func (pg *pgStore) ListJobs(ctx context.Context, filter JobFilter, page Paginati
 	}
 	if page.OffSet != nil {
 		query += fmt.Sprintf(" OFFSET $%d", argPos)
-		args = append(args, *page.Limit)
+		args = append(args, *page.OffSet)
+		argPos++
 	}
 	rows, err := pg.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	jobs, err := pgx.CollectRows(rows, pgx.RowToStructByName[Job])
+	jobs, err := pgx.CollectRows(rows, pgx.RowToStructByName[model.Job])
 	if err != nil {
 		return nil, err
 	}
 	return jobs, nil
 }
 
+// ClaimNextJob atomically claims the next pending job matching capabilities, ordered by priority.
+// Returns nil if no job is available. Uses FOR UPDATE SKIP LOCKED for concurrency.
+func (pg *pgStore) ClaimNextJob(ctx context.Context, workerID string, capabilities []string) (*model.Job, error) {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var jobID uuid.UUID
+	var query string
+	var args []any
+
+	if len(capabilities) == 0 {
+		query = `
+		SELECT id FROM jobs
+		WHERE status = 'pending' AND scheduled_at <= now()
+		` + jobClaimOrderBy + `
+		LIMIT 1 FOR UPDATE SKIP LOCKED`
+		args = []any{}
+	} else {
+		query = `
+		SELECT id FROM jobs
+		WHERE status = 'pending' AND scheduled_at <= now() AND type = ANY($1)
+		` + jobClaimOrderBy + `
+		LIMIT 1 FOR UPDATE SKIP LOCKED`
+		args = []any{capabilities}
+	}
+
+	err = tx.QueryRow(ctx, query, args...).Scan(&jobID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			_ = tx.Commit(ctx)
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// Mark job as running
+	rows, err := tx.Query(ctx, `
+		UPDATE jobs SET status = 'running', updated_at = now()
+		WHERE id = $1 RETURNING *`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	jobPtr, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+	if err != nil {
+		return nil, err
+	}
+	job := *jobPtr
+
+	// Insert job attempt
+	_, err = tx.Exec(ctx, `
+		INSERT INTO job_attempts (job_id, worker_id, started_at)
+		VALUES ($1, $2, now())`, jobID, workerID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+// CompleteJob marks a running job as succeeded and closes its open attempt.
+func (pg *pgStore) CompleteJob(ctx context.Context, jobID uuid.UUID, workerID string) (*model.Job, error) {
+	return pg.withTx(ctx, func(tx pgx.Tx) (*model.Job, error) {
+		rows, err := tx.Query(ctx, `UPDATE jobs SET status = 'succeeded', completed_at = now(), updated_at = now() WHERE id = $1 RETURNING *`, jobID)
+		if err != nil {
+			return nil, err
+		}
+		jobPtr, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE job_attempts SET finished_at = now(), success = true WHERE job_id = $1 AND worker_id = $2 AND finished_at IS NULL`, jobID, workerID); err != nil {
+			return nil, err
+		}
+		return jobPtr, nil
+	})
+}
+
+// FailJob increments attempt_count and branches to pending or dead, recording the error.
+func (pg *pgStore) FailJob(ctx context.Context, jobID uuid.UUID, workerID string, errorMsg string) (*model.Job, error) {
+	return pg.withTx(ctx, func(tx pgx.Tx) (*model.Job, error) {
+		// Fetch current job for MaxAttempts/AttemptCount
+		rows, err := tx.Query(ctx, `SELECT * FROM jobs WHERE id = $1 FOR UPDATE`, jobID)
+		if err != nil {
+			return nil, err
+		}
+		jobPtr, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return nil, nil
+			}
+			return nil, err
+		}
+		newCount := jobPtr.AttemptCount + 1
+		var newStatus model.JobStatus
+		var deadAt *time.Time
+		if newCount >= jobPtr.MaxAttempts {
+			newStatus = model.JobStatusDead
+			t := time.Now().UTC()
+			deadAt = &t
+		} else {
+			newStatus = model.JobStatusPending
+		}
+	// Record attempt
+	_, err = tx.Exec(ctx, `INSERT INTO job_attempts (job_id, worker_id, started_at, finished_at, success, error) VALUES ($1, $2, now() - interval '1 second', now(), false, $3)`, jobID, workerID, errorMsg)
+	if err != nil {
+		return nil, err
+	}
+	// Update job
+	var updated *model.Job
+	if deadAt != nil {
+		rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, dead_at = $3, updated_at = now() WHERE id = $4 RETURNING *`, newCount, newStatus, *deadAt, jobID)
+	} else {
+		rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, updated_at = now() WHERE id = $3 RETURNING *`, newCount, newStatus, jobID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	updated, err = pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+	})
+}
+
+// SweepDeadWorkers marks workers alive with last_heartbeat < deadBefore as dead,
+// requeues their running jobs to pending, and closes dangling attempts with error='worker died'.
+// Three tables are touched in one transaction intentionally per spec atomicity; helpers keep each step focused.
+func (pg *pgStore) SweepDeadWorkers(ctx context.Context, deadBefore time.Time) (int, int, error) {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	deadIDs, err := pg.markDeadWorkers(ctx, tx, deadBefore)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(deadIDs) == 0 {
+		_ = tx.Commit(ctx)
+		return 0, 0, nil
+	}
+
+	requeued, err := pg.requeueJobsOfDeadWorkers(ctx, tx, deadIDs)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := pg.closeAttemptsOfDeadWorkers(ctx, tx, deadIDs); err != nil {
+		return 0, 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, err
+	}
+	return len(deadIDs), requeued, nil
+}
+
+func (pg *pgStore) markDeadWorkers(ctx context.Context, tx pgx.Tx, deadBefore time.Time) ([]string, error) {
+	rows, err := tx.Query(ctx, `UPDATE workers SET status = 'dead' WHERE status = 'alive' AND last_heartbeat < $1 RETURNING id`, deadBefore)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+func (pg *pgStore) requeueJobsOfDeadWorkers(ctx context.Context, tx pgx.Tx, deadIDs []string) (int, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE jobs SET status = 'pending', updated_at = now()
+		WHERE status = 'running' AND id IN (
+			SELECT job_id FROM job_attempts WHERE worker_id = ANY($1) AND finished_at IS NULL
+		)`, deadIDs)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (pg *pgStore) closeAttemptsOfDeadWorkers(ctx context.Context, tx pgx.Tx, deadIDs []string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE job_attempts SET finished_at = now(), success = false, error = 'worker died'
+		WHERE worker_id = ANY($1) AND finished_at IS NULL`, deadIDs)
+	return err
+}
+
 // GetJobAttempt retrieves job attempts.
-func (pg *pgStore) GetJobAttempt(ctx context.Context, attemptID uuid.UUID) (*JobAttempt, error) {
+func (pg *pgStore) GetJobAttempt(ctx context.Context, attemptID uuid.UUID) (*model.JobAttempt, error) {
 	query := `
 	SELECT * FROM job_attempts WHERE id = $1;
 	`
@@ -184,15 +406,18 @@ func (pg *pgStore) GetJobAttempt(ctx context.Context, attemptID uuid.UUID) (*Job
 	if err != nil {
 		return nil, err
 	}
-	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[JobAttempt])
+	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.JobAttempt])
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return job, nil
 }
 
 // ListJobAttempts retrieves all the jobs with the filter. Checkout JobAttemptFilter.
-func (pg *pgStore) ListJobAttempts(ctx context.Context, filter JobAttemptFilter, page Pagination) ([]JobAttempt, error) {
+func (pg *pgStore) ListJobAttempts(ctx context.Context, filter JobAttemptFilter, page Pagination) ([]model.JobAttempt, error) {
 	var (
 		conditions []string
 		args       []any
@@ -213,7 +438,7 @@ func (pg *pgStore) ListJobAttempts(ctx context.Context, filter JobAttemptFilter,
 			args = append(args, e)
 			argPos++
 		}
-		conditions = append(conditions, "error IN (%s)", strings.Join(placeHolders, ", "))
+		conditions = append(conditions, fmt.Sprintf("error IN (%s)", strings.Join(placeHolders, ", ")))
 	}
 	if filter.FinishedFrom != nil {
 		addConditions("finished_at >= $%d", *filter.FinishedFrom)
@@ -247,7 +472,7 @@ func (pg *pgStore) ListJobAttempts(ctx context.Context, filter JobAttemptFilter,
 	if err != nil {
 		return nil, err
 	}
-	jobAttempts, err := pgx.CollectRows(rows, pgx.RowToStructByName[JobAttempt])
+	jobAttempts, err := pgx.CollectRows(rows, pgx.RowToStructByName[model.JobAttempt])
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +480,7 @@ func (pg *pgStore) ListJobAttempts(ctx context.Context, filter JobAttemptFilter,
 }
 
 // GetWorker retrieves worker.
-func (pg *pgStore) GetWorker(ctx context.Context, workerID string) (*Worker, error) {
+func (pg *pgStore) GetWorker(ctx context.Context, workerID string) (*model.Worker, error) {
 	query := `
 	SELECT * FROM workers WHERE id = $1
 	`
@@ -263,12 +488,18 @@ func (pg *pgStore) GetWorker(ctx context.Context, workerID string) (*Worker, err
 	if err != nil {
 		return nil, err
 	}
-	worker, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Worker])
-	return worker, err
+	worker, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Worker])
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return worker, nil
 }
 
 // ListWorkers retrieves all the workers with the filter. Checkout WorkerFilter.
-func (pg *pgStore) ListWorkers(ctx context.Context, filter WorkerFilter, page Pagination) ([]Worker, error) {
+func (pg *pgStore) ListWorkers(ctx context.Context, filter WorkerFilter, page Pagination) ([]model.Worker, error) {
 	var (
 		conditions []string
 		args       []any
@@ -317,17 +548,20 @@ func (pg *pgStore) ListWorkers(ctx context.Context, filter WorkerFilter, page Pa
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	if page.Limit != nil {
-		query += fmt.Sprintf("LIMIT $%d", argPos)
+		query += fmt.Sprintf(" LIMIT $%d", argPos)
+		args = append(args, *page.Limit)
 		argPos++
 	}
 	if page.OffSet != nil {
-		query += fmt.Sprintf("OFFSET $%d", argPos)
+		query += fmt.Sprintf(" OFFSET $%d", argPos)
+		args = append(args, *page.OffSet)
+		argPos++
 	}
 	rows, err := pg.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	worker, err := pgx.CollectRows(rows, pgx.RowToStructByName[Worker])
+	worker, err := pgx.CollectRows(rows, pgx.RowToStructByName[model.Worker])
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +569,7 @@ func (pg *pgStore) ListWorkers(ctx context.Context, filter WorkerFilter, page Pa
 }
 
 // UpdateJob updates job check JobUpdate for what will be changed.
-func (pg *pgStore) UpdateJob(ctx context.Context, jobID uuid.UUID, update JobUpdate) (*Job, error) {
+func (pg *pgStore) UpdateJob(ctx context.Context, jobID uuid.UUID, update JobUpdate) (*model.Job, error) {
 	var (
 		updates []string
 		args    []any
@@ -347,7 +581,7 @@ func (pg *pgStore) UpdateJob(ctx context.Context, jobID uuid.UUID, update JobUpd
 		argPos++
 	}
 	if update.Status != nil {
-		addUpdates("update = $%d", *update.Status)
+		addUpdates("status = $%d", *update.Status)
 	}
 	if update.Priority != nil {
 		addUpdates("priority = $%d", *update.Priority)
@@ -374,7 +608,7 @@ func (pg *pgStore) UpdateJob(ctx context.Context, jobID uuid.UUID, update JobUpd
 	if err != nil {
 		return nil, err
 	}
-	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Job])
+	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +616,7 @@ func (pg *pgStore) UpdateJob(ctx context.Context, jobID uuid.UUID, update JobUpd
 }
 
 // UpdateJobAttempt updates job attempt, check JobAttemptUpdate.
-func (pg *pgStore) UpdateJobAttempt(ctx context.Context, jobAttemptID uuid.UUID, update JobAttemptUpdate) (*JobAttempt, error) {
+func (pg *pgStore) UpdateJobAttempt(ctx context.Context, jobAttemptID uuid.UUID, update JobAttemptUpdate) (*model.JobAttempt, error) {
 	var (
 		updates []string
 		args    []any
@@ -423,7 +657,7 @@ func (pg *pgStore) UpdateJobAttempt(ctx context.Context, jobAttemptID uuid.UUID,
 	if err != nil {
 		return nil, err
 	}
-	jobAttempt, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[JobAttempt])
+	jobAttempt, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.JobAttempt])
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +665,7 @@ func (pg *pgStore) UpdateJobAttempt(ctx context.Context, jobAttemptID uuid.UUID,
 }
 
 // UpdateWorker updates worker, check WorkerUpdate.
-func (pg *pgStore) UpdateWorker(ctx context.Context, workerID string, update WorkerUpdate) (*Worker, error) {
+func (pg *pgStore) UpdateWorker(ctx context.Context, workerID string, update WorkerUpdate) (*model.Worker, error) {
 	var (
 		updates []string
 		args    []any
@@ -469,7 +703,7 @@ func (pg *pgStore) UpdateWorker(ctx context.Context, workerID string, update Wor
 	if err != nil {
 		return nil, err
 	}
-	worker, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Worker])
+	worker, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Worker])
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +712,7 @@ func (pg *pgStore) UpdateWorker(ctx context.Context, workerID string, update Wor
 
 // DeleteJob simply delets a job based on ID.
 func (pg *pgStore) DeleteJob(ctx context.Context, jobID uuid.UUID) error {
-	query := `DELETE jobs WHERE id = $1`
+	query := `DELETE FROM jobs WHERE id = $1`
 	tag, err := pg.pool.Exec(ctx, query, jobID)
 	if err != nil {
 		return err
@@ -491,7 +725,7 @@ func (pg *pgStore) DeleteJob(ctx context.Context, jobID uuid.UUID) error {
 
 // DeleteJobAttempt deletes a job update.
 func (pg *pgStore) DeleteJobAttempt(ctx context.Context, jobAttemptID uuid.UUID) error {
-	query := `DELETE job_attempts WHERE id = $1`
+	query := `DELETE FROM job_attempts WHERE id = $1`
 	tag, err := pg.pool.Exec(ctx, query, jobAttemptID)
 	if err != nil {
 		return err
@@ -504,7 +738,7 @@ func (pg *pgStore) DeleteJobAttempt(ctx context.Context, jobAttemptID uuid.UUID)
 
 // DeleteWorker deletes worker from the database.
 func (pg *pgStore) DeleteWorker(ctx context.Context, workerID string) error {
-	query := `DELETE workers WHERE id = $1`
+	query := `DELETE FROM workers WHERE id = $1`
 	tag, err := pg.pool.Exec(ctx, query, workerID)
 	if err != nil {
 		return err

@@ -10,7 +10,7 @@ import (
 )
 
 func init() {
-	godotenv.Load()
+	_ = godotenv.Load()
 }
 
 func main() {

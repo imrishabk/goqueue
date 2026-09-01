@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 
+	"github.com/imrishabk/goqueue/internal/model"
 	"github.com/imrishabk/goqueue/internal/store"
 )
 
@@ -15,19 +16,19 @@ func NewWorkerService(st store.WorkerStore) WorkerService {
 	return &workerService{st}
 }
 
-func (s *workerService) CreateWorker(ctx context.Context, worker *store.Worker) (*store.Worker, error) {
+func (s *workerService) CreateWorker(ctx context.Context, worker *model.Worker) (*model.Worker, error) {
 	return nil, nil
 }
 
-func (s *workerService) GetWorker(ctx context.Context, workerID string) (*store.Worker, error) {
+func (s *workerService) GetWorker(ctx context.Context, workerID string) (*model.Worker, error) {
 	return nil, nil
 }
 
-func (s *workerService) ListWorker(ctx context.Context, filter *store.WorkerFilter, page store.Pagination) ([]store.Worker, error) {
+func (s *workerService) ListWorker(ctx context.Context, filter *store.WorkerFilter, page store.Pagination) ([]model.Worker, error) {
 	return nil, nil
 }
 
-func (s *workerService) UpdateWorker(ctx context.Context, filter *store.WorkerUpdate) (*store.Worker, error) {
+func (s *workerService) UpdateWorker(ctx context.Context, filter *store.WorkerUpdate) (*model.Worker, error) {
 	return nil, nil
 }
 
