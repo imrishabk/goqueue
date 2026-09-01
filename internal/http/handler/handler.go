@@ -101,6 +101,20 @@ func parseWorkerHeartbeatID(path string) (string, error) {
 	return id, nil
 }
 
+// parsePollID extracts worker ID from /workers/<id>/poll
+func parsePollID(path string) (string, error) {
+	trimmed := strings.TrimPrefix(path, "/workers/")
+	if !strings.HasSuffix(trimmed, "/poll") {
+		return "", errInvalidID
+	}
+	id := strings.TrimSuffix(trimmed, "/poll")
+	id = strings.TrimSuffix(id, "/")
+	if id == "" || strings.Contains(id, "/") {
+		return "", errInvalidID
+	}
+	return id, nil
+}
+
 // createJobRequest mirrors POST /jobs body — scheduled_at remains string to keep JSON flexible,
 // but parsing is delegated to parseScheduledAt to avoid Primitive Obsession in handler.
 type createJobRequest struct {
@@ -285,6 +299,47 @@ func (h *Handler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(updated)
+}
+
+// Poll handles POST /workers/:id/poll
+// Capabilities are fetched via GetWorker and passed explicitly to ClaimNextJob
+// to keep Store focused on jobs table (no worker JOIN) and to make the
+// capability set observable at the HTTP seam for tests.
+func (h *Handler) Poll(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		var err error
+		id, err = parsePollID(r.URL.Path)
+		if err != nil {
+			http.Error(w, `{"error":"invalid worker id"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	worker, err := h.store.GetWorker(r.Context(), id)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get worker"}`, http.StatusInternalServerError)
+		return
+	}
+	if worker == nil {
+		http.Error(w, `{"error":"worker not found"}`, http.StatusNotFound)
+		return
+	}
+	caps := worker.Capabilities
+	if caps == nil {
+		caps = []string{}
+	}
+	job, err := h.store.ClaimNextJob(r.Context(), id, caps)
+	if err != nil {
+		http.Error(w, `{"error":"failed to claim job"}`, http.StatusInternalServerError)
+		return
+	}
+	if job == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(job)
 }
 
 // ListWorkers handles GET /workers?limit=&offset=

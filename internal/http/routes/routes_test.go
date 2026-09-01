@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/imrishabk/goqueue/internal/http/handler"
@@ -41,6 +43,49 @@ func (f *fakeStore) UpdateJob(_ context.Context, _ uuid.UUID, _ store.JobUpdate)
 	return nil, nil
 }
 func (f *fakeStore) DeleteJob(_ context.Context, _ uuid.UUID) error { return nil }
+func (f *fakeStore) ClaimNextJob(_ context.Context, _ string, caps []string) (*model.Job, error) {
+	now := time.Now().UTC()
+	var candidates []int
+	for i, j := range f.jobs {
+		if j.Status != model.JobStatusPending {
+			continue
+		}
+		if j.ScheduledAt.After(now) {
+			continue
+		}
+		if len(caps) > 0 {
+			match := false
+			for _, c := range caps {
+				if c == j.Type {
+					match = true
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+		candidates = append(candidates, i)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		a := f.jobs[candidates[i]]
+		b := f.jobs[candidates[j]]
+		if a.Priority != b.Priority {
+			return a.Priority > b.Priority
+		}
+		if !a.ScheduledAt.Equal(b.ScheduledAt) {
+			return a.ScheduledAt.Before(b.ScheduledAt)
+		}
+		return a.CreatedAt.Before(b.CreatedAt)
+	})
+	idx := candidates[0]
+	f.jobs[idx].Status = model.JobStatusRunning
+	cp := f.jobs[idx]
+	return &cp, nil
+}
 func (f *fakeStore) CreateJobAttempt(_ context.Context, ja *model.JobAttempt) (*model.JobAttempt, error) {
 	return ja, nil
 }
@@ -120,5 +165,21 @@ func TestRouter_Health(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestRouter_PollViaPattern(t *testing.T) {
+	now := time.Now().Add(-time.Minute)
+	fs := &fakeStore{
+		jobs:    []model.Job{{ID: uuid.New(), Type: "email", Status: model.JobStatusPending, Priority: 5, ScheduledAt: now, CreatedAt: now}},
+		workers: []model.Worker{{ID: "w1", Hostname: "h1", Capabilities: []string{"email"}}},
+	}
+	h := handler.NewHandler(fs)
+	r := NewRouter(h)
+	req := httptest.NewRequest(http.MethodPost, "/workers/w1/poll", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body %s", w.Code, w.Body.String())
 	}
 }

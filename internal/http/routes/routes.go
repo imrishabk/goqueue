@@ -22,6 +22,7 @@ func NewRouter(h *handler.Handler) http.Handler {
 	mux.HandleFunc("POST /workers/register", h.RegisterWorker)
 	mux.HandleFunc("GET /workers", h.ListWorkers)
 	mux.HandleFunc("POST /workers/{id}/heartbeat", h.Heartbeat)
+	mux.HandleFunc("POST /workers/{id}/poll", h.Poll)
 
 	return mux
 }

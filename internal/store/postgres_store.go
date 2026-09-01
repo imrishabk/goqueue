@@ -16,6 +16,8 @@ type pgStore struct {
 	pool *pgxpool.Pool
 }
 
+const jobClaimOrderBy = "ORDER BY priority DESC, scheduled_at ASC, created_at ASC"
+
 // NewPGStore creates a new Store instance
 func NewPGStore(p *pgxpool.Pool) Store {
 	return &pgStore{pool: p}
@@ -177,6 +179,71 @@ func (pg *pgStore) ListJobs(ctx context.Context, filter JobFilter, page Paginati
 		return nil, err
 	}
 	return jobs, nil
+}
+
+// ClaimNextJob atomically claims the next pending job matching capabilities, ordered by priority.
+// Returns nil if no job is available. Uses FOR UPDATE SKIP LOCKED for concurrency.
+func (pg *pgStore) ClaimNextJob(ctx context.Context, workerID string, capabilities []string) (*model.Job, error) {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var jobID uuid.UUID
+	var query string
+	var args []any
+
+	if len(capabilities) == 0 {
+		query = `
+		SELECT id FROM jobs
+		WHERE status = 'pending' AND scheduled_at <= now()
+		` + jobClaimOrderBy + `
+		LIMIT 1 FOR UPDATE SKIP LOCKED`
+		args = []any{}
+	} else {
+		query = `
+		SELECT id FROM jobs
+		WHERE status = 'pending' AND scheduled_at <= now() AND type = ANY($1)
+		` + jobClaimOrderBy + `
+		LIMIT 1 FOR UPDATE SKIP LOCKED`
+		args = []any{capabilities}
+	}
+
+	err = tx.QueryRow(ctx, query, args...).Scan(&jobID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			_ = tx.Commit(ctx)
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// Mark job as running
+	rows, err := tx.Query(ctx, `
+		UPDATE jobs SET status = 'running', updated_at = now()
+		WHERE id = $1 RETURNING *`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	jobPtr, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+	if err != nil {
+		return nil, err
+	}
+	job := *jobPtr
+
+	// Insert job attempt
+	_, err = tx.Exec(ctx, `
+		INSERT INTO job_attempts (job_id, worker_id, started_at)
+		VALUES ($1, $2, now())`, jobID, workerID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &job, nil
 }
 
 // GetJobAttempt retrieves job attempts.

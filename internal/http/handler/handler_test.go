@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/imrishabk/goqueue/internal/model"
@@ -62,6 +64,52 @@ func (f *fakeStore) UpdateJob(_ context.Context, _ uuid.UUID, _ store.JobUpdate)
 	return nil, nil
 }
 func (f *fakeStore) DeleteJob(_ context.Context, _ uuid.UUID) error { return nil }
+
+func (f *fakeStore) ClaimNextJob(_ context.Context, _ string, capabilities []string) (*model.Job, error) {
+	now := time.Now().UTC()
+	// find candidates
+	var candidates []int
+	for i, j := range f.jobs {
+		if j.Status != model.JobStatusPending {
+			continue
+		}
+		if j.ScheduledAt.After(now) {
+			continue
+		}
+		if len(capabilities) > 0 {
+			match := false
+			for _, c := range capabilities {
+				if c == j.Type {
+					match = true
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+		candidates = append(candidates, i)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	// order by priority DESC, scheduled_at ASC, created_at ASC — use sort.Slice
+	sort.Slice(candidates, func(i, j int) bool {
+		a := f.jobs[candidates[i]]
+		b := f.jobs[candidates[j]]
+		if a.Priority != b.Priority {
+			return a.Priority > b.Priority
+		}
+		if !a.ScheduledAt.Equal(b.ScheduledAt) {
+			return a.ScheduledAt.Before(b.ScheduledAt)
+		}
+		return a.CreatedAt.Before(b.CreatedAt)
+	})
+	idx := candidates[0]
+	f.jobs[idx].Status = model.JobStatusRunning
+	cp := f.jobs[idx]
+	return &cp, nil
+}
 
 func (f *fakeStore) CreateJobAttempt(_ context.Context, ja *model.JobAttempt) (*model.JobAttempt, error) {
 	return ja, nil
