@@ -129,6 +129,9 @@ func (pg *pgStore) ListJobs(ctx context.Context, filter JobFilter, page Paginati
 		}
 		conditions = append(conditions, fmt.Sprintf("status IN (%s)", strings.Join(placeHolders, ", ")))
 	}
+	if filter.Type != nil {
+		addConditions("type = $%d", *filter.Type)
+	}
 	if filter.Priority != nil {
 		addConditions("priority = $%d", *filter.Priority)
 	}

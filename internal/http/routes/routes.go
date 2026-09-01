@@ -7,15 +7,21 @@ import (
 )
 
 // NewRouter wires HTTP routes at the HTTP seam.
+// Uses Go 1.22+ pattern syntax with PathValue to avoid manual HasSuffix parsing.
 func NewRouter(h *handler.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", h.Health)
-	mux.HandleFunc("/jobs", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-			return
-		}
-		h.ListJobs(w, r)
-	})
+
+	mux.HandleFunc("GET /health", h.Health)
+
+	// jobs
+	mux.HandleFunc("GET /jobs", h.ListJobs)
+	mux.HandleFunc("POST /jobs", h.CreateJob)
+	mux.HandleFunc("GET /jobs/{id}", h.GetJob)
+
+	// workers
+	mux.HandleFunc("POST /workers/register", h.RegisterWorker)
+	mux.HandleFunc("GET /workers", h.ListWorkers)
+	mux.HandleFunc("POST /workers/{id}/heartbeat", h.Heartbeat)
+
 	return mux
 }

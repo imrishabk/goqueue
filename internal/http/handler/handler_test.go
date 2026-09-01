@@ -15,13 +15,29 @@ import (
 // fakeStore is a minimal in-memory stub for Handler tests at the HTTP seam.
 type fakeStore struct {
 	jobs    []model.Job
+	workers []model.Worker
 	listErr error
 }
 
 func (f *fakeStore) CreateJob(_ context.Context, job *model.Job) (*model.Job, error) {
-	return job, nil
+	if job.ID == uuid.Nil {
+		job.ID = uuid.New()
+	}
+	// store a copy for GetJob tests
+	f.jobs = append(f.jobs, *job)
+	// return copy
+	cp := *job
+	return &cp, nil
 }
-func (f *fakeStore) GetJob(_ context.Context, _ uuid.UUID) (*model.Job, error) { return nil, nil }
+func (f *fakeStore) GetJob(_ context.Context, id uuid.UUID) (*model.Job, error) {
+	for _, j := range f.jobs {
+		if j.ID == id {
+			cp := j
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
 func (f *fakeStore) ListJobs(_ context.Context, _ store.JobFilter, page store.Pagination) ([]model.Job, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
@@ -61,12 +77,55 @@ func (f *fakeStore) UpdateJobAttempt(_ context.Context, _ uuid.UUID, _ store.Job
 }
 func (f *fakeStore) DeleteJobAttempt(_ context.Context, _ uuid.UUID) error { return nil }
 
-func (f *fakeStore) CreateWorker(_ context.Context, w *model.Worker) (*model.Worker, error) { return w, nil }
-func (f *fakeStore) GetWorker(_ context.Context, _ string) (*model.Worker, error) { return nil, nil }
-func (f *fakeStore) ListWorkers(_ context.Context, _ store.WorkerFilter, _ store.Pagination) ([]model.Worker, error) {
+func (f *fakeStore) CreateWorker(_ context.Context, w *model.Worker) (*model.Worker, error) {
+	if w.Status == "" {
+		w.Status = model.WorkerStatusAlive
+	}
+	f.workers = append(f.workers, *w)
+	cp := *w
+	return &cp, nil
+}
+func (f *fakeStore) GetWorker(_ context.Context, id string) (*model.Worker, error) {
+	for _, w := range f.workers {
+		if w.ID == id {
+			cp := w
+			return &cp, nil
+		}
+	}
 	return nil, nil
 }
-func (f *fakeStore) UpdateWorker(_ context.Context, _ string, _ store.WorkerUpdate) (*model.Worker, error) {
+func (f *fakeStore) ListWorkers(_ context.Context, _ store.WorkerFilter, page store.Pagination) ([]model.Worker, error) {
+	start := 0
+	if page.OffSet != nil {
+		start = *page.OffSet
+		if start > len(f.workers) {
+			start = len(f.workers)
+		}
+	}
+	end := len(f.workers)
+	if page.Limit != nil {
+		if start+*page.Limit < end {
+			end = start + *page.Limit
+		}
+	}
+	return f.workers[start:end], nil
+}
+func (f *fakeStore) UpdateWorker(_ context.Context, id string, upd store.WorkerUpdate) (*model.Worker, error) {
+	for i, w := range f.workers {
+		if w.ID == id {
+			if upd.Status != nil {
+				f.workers[i].Status = *upd.Status
+			}
+			if upd.LastHeartbeat != nil {
+				f.workers[i].LastHeartbeat = *upd.LastHeartbeat
+			}
+			if upd.Hostname != nil {
+				f.workers[i].Hostname = *upd.Hostname
+			}
+			cp := f.workers[i]
+			return &cp, nil
+		}
+	}
 	return nil, nil
 }
 func (f *fakeStore) DeleteWorker(_ context.Context, _ string) error { return nil }

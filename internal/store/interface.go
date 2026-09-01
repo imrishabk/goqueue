@@ -25,8 +25,11 @@ type JobStore interface {
 }
 
 type JobFilter struct {
-	Status        []model.JobStatus
-	Priority      *int16
+	Status []model.JobStatus
+	// Type filters by exact job type; single value for MVP (comma-separated multi-type deferred to v2
+	// to keep parity with Status []JobStatus intentional — Status often queried as set, Type as single)
+	Type     *string
+	Priority *int16
 	CreatedFrom   *time.Time
 	CreatedTo     *time.Time
 	ScheduledFrom *time.Time
