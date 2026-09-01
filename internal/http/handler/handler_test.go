@@ -1,0 +1,151 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/imrishabk/goqueue/internal/model"
+	"github.com/imrishabk/goqueue/internal/store"
+)
+
+// fakeStore is a minimal in-memory stub for Handler tests at the HTTP seam.
+type fakeStore struct {
+	jobs    []model.Job
+	listErr error
+}
+
+func (f *fakeStore) CreateJob(_ context.Context, job *model.Job) (*model.Job, error) {
+	return job, nil
+}
+func (f *fakeStore) GetJob(_ context.Context, _ uuid.UUID) (*model.Job, error) { return nil, nil }
+func (f *fakeStore) ListJobs(_ context.Context, _ store.JobFilter, page store.Pagination) ([]model.Job, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	// honor pagination trivially for tests
+	start := 0
+	if page.OffSet != nil {
+		start = *page.OffSet
+		if start > len(f.jobs) {
+			start = len(f.jobs)
+		}
+	}
+	end := len(f.jobs)
+	if page.Limit != nil {
+		if start+*page.Limit < end {
+			end = start + *page.Limit
+		}
+	}
+	return f.jobs[start:end], nil
+}
+func (f *fakeStore) UpdateJob(_ context.Context, _ uuid.UUID, _ store.JobUpdate) (*model.Job, error) {
+	return nil, nil
+}
+func (f *fakeStore) DeleteJob(_ context.Context, _ uuid.UUID) error { return nil }
+
+func (f *fakeStore) CreateJobAttempt(_ context.Context, ja *model.JobAttempt) (*model.JobAttempt, error) {
+	return ja, nil
+}
+func (f *fakeStore) GetJobAttempt(_ context.Context, _ uuid.UUID) (*model.JobAttempt, error) {
+	return nil, nil
+}
+func (f *fakeStore) ListJobAttempts(_ context.Context, _ store.JobAttemptFilter, _ store.Pagination) ([]model.JobAttempt, error) {
+	return nil, nil
+}
+func (f *fakeStore) UpdateJobAttempt(_ context.Context, _ uuid.UUID, _ store.JobAttemptUpdate) (*model.JobAttempt, error) {
+	return nil, nil
+}
+func (f *fakeStore) DeleteJobAttempt(_ context.Context, _ uuid.UUID) error { return nil }
+
+func (f *fakeStore) CreateWorker(_ context.Context, w *model.Worker) (*model.Worker, error) { return w, nil }
+func (f *fakeStore) GetWorker(_ context.Context, _ string) (*model.Worker, error) { return nil, nil }
+func (f *fakeStore) ListWorkers(_ context.Context, _ store.WorkerFilter, _ store.Pagination) ([]model.Worker, error) {
+	return nil, nil
+}
+func (f *fakeStore) UpdateWorker(_ context.Context, _ string, _ store.WorkerUpdate) (*model.Worker, error) {
+	return nil, nil
+}
+func (f *fakeStore) DeleteWorker(_ context.Context, _ string) error { return nil }
+
+var _ store.Store = (*fakeStore)(nil)
+
+func TestHealth(t *testing.T) {
+	h := NewHandler(&fakeStore{})
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h.Health(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("expected application/json, got %s", ct)
+	}
+}
+
+func TestListJobs_Empty(t *testing.T) {
+	h := NewHandler(&fakeStore{jobs: []model.Job{}})
+	req := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	w := httptest.NewRecorder()
+	h.ListJobs(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body %s", w.Code, w.Body.String())
+	}
+	var jobs []model.Job
+	if err := json.NewDecoder(w.Body).Decode(&jobs); err != nil {
+		t.Fatalf("decode: %v body %s", err, w.Body.String())
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("expected 0 jobs, got %d", len(jobs))
+	}
+}
+
+func TestListJobs_Pagination(t *testing.T) {
+	jobs := make([]model.Job, 5)
+	for i := range jobs {
+		jobs[i].ID = uuid.New()
+	}
+	h := NewHandler(&fakeStore{jobs: jobs})
+	// limit=2 offset=1 should return 2 jobs (indices 1,2)
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=2&offset=1", nil)
+	w := httptest.NewRecorder()
+	h.ListJobs(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var got []model.Job
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(got))
+	}
+}
+
+func TestListJobs_LimitCapped(t *testing.T) {
+	h := NewHandler(&fakeStore{jobs: make([]model.Job, 5)})
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=500", nil)
+	w := httptest.NewRecorder()
+	h.ListJobs(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	// should be capped to 100, so still returns 5 (all jobs) not error
+	var got []model.Job
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("expected 5, got %d", len(got))
+	}
+}

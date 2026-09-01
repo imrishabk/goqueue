@@ -1,4 +1,4 @@
-package store
+package model
 
 // Models for the table schema of task queue database
 import (
