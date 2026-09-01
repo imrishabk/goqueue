@@ -23,10 +23,16 @@ type JobStore interface {
 	JobUpdater
 	JobDeleter
 	JobClaimer
+	JobCompleter
 }
 
 type JobClaimer interface {
 	ClaimNextJob(ctx context.Context, workerID string, capabilities []string) (*model.Job, error)
+}
+
+type JobCompleter interface {
+	CompleteJob(ctx context.Context, jobID uuid.UUID, workerID string) (*model.Job, error)
+	FailJob(ctx context.Context, jobID uuid.UUID, workerID string, errorMsg string) (*model.Job, error)
 }
 
 type JobFilter struct {

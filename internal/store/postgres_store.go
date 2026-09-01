@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/imrishabk/goqueue/internal/model"
@@ -17,6 +18,24 @@ type pgStore struct {
 }
 
 const jobClaimOrderBy = "ORDER BY priority DESC, scheduled_at ASC, created_at ASC"
+
+// withTx runs fn in a transaction, handling Begin/Rollback/Commit.
+// Used to avoid Divergent Change duplication between CompleteJob/FailJob/ClaimNextJob.
+func (pg *pgStore) withTx(ctx context.Context, fn func(tx pgx.Tx) (*model.Job, error)) (*model.Job, error) {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	job, err := fn(tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return job, nil
+}
 
 // NewPGStore creates a new Store instance
 func NewPGStore(p *pgxpool.Pool) Store {
@@ -103,6 +122,9 @@ func (pg *pgStore) GetJob(ctx context.Context, jobID uuid.UUID) (*model.Job, err
 	}
 	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return job, nil
@@ -246,6 +268,75 @@ func (pg *pgStore) ClaimNextJob(ctx context.Context, workerID string, capabiliti
 	return &job, nil
 }
 
+// CompleteJob marks a running job as succeeded and closes its open attempt.
+func (pg *pgStore) CompleteJob(ctx context.Context, jobID uuid.UUID, workerID string) (*model.Job, error) {
+	return pg.withTx(ctx, func(tx pgx.Tx) (*model.Job, error) {
+		rows, err := tx.Query(ctx, `UPDATE jobs SET status = 'succeeded', completed_at = now(), updated_at = now() WHERE id = $1 RETURNING *`, jobID)
+		if err != nil {
+			return nil, err
+		}
+		jobPtr, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE job_attempts SET finished_at = now(), success = true WHERE job_id = $1 AND worker_id = $2 AND finished_at IS NULL`, jobID, workerID); err != nil {
+			return nil, err
+		}
+		return jobPtr, nil
+	})
+}
+
+// FailJob increments attempt_count and branches to pending or dead, recording the error.
+func (pg *pgStore) FailJob(ctx context.Context, jobID uuid.UUID, workerID string, errorMsg string) (*model.Job, error) {
+	return pg.withTx(ctx, func(tx pgx.Tx) (*model.Job, error) {
+		// Fetch current job for MaxAttempts/AttemptCount
+		rows, err := tx.Query(ctx, `SELECT * FROM jobs WHERE id = $1 FOR UPDATE`, jobID)
+		if err != nil {
+			return nil, err
+		}
+		jobPtr, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return nil, nil
+			}
+			return nil, err
+		}
+		newCount := jobPtr.AttemptCount + 1
+		var newStatus model.JobStatus
+		var deadAt *time.Time
+		if newCount >= jobPtr.MaxAttempts {
+			newStatus = model.JobStatusDead
+			t := time.Now().UTC()
+			deadAt = &t
+		} else {
+			newStatus = model.JobStatusPending
+		}
+	// Record attempt
+	_, err = tx.Exec(ctx, `INSERT INTO job_attempts (job_id, worker_id, started_at, finished_at, success, error) VALUES ($1, $2, now() - interval '1 second', now(), false, $3)`, jobID, workerID, errorMsg)
+	if err != nil {
+		return nil, err
+	}
+	// Update job
+	var updated *model.Job
+	if deadAt != nil {
+		rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, dead_at = $3, updated_at = now() WHERE id = $4 RETURNING *`, newCount, newStatus, *deadAt, jobID)
+	} else {
+		rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, updated_at = now() WHERE id = $3 RETURNING *`, newCount, newStatus, jobID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	updated, err = pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+	})
+}
+
 // GetJobAttempt retrieves job attempts.
 func (pg *pgStore) GetJobAttempt(ctx context.Context, attemptID uuid.UUID) (*model.JobAttempt, error) {
 	query := `
@@ -257,6 +348,9 @@ func (pg *pgStore) GetJobAttempt(ctx context.Context, attemptID uuid.UUID) (*mod
 	}
 	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.JobAttempt])
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return job, nil
@@ -335,7 +429,13 @@ func (pg *pgStore) GetWorker(ctx context.Context, workerID string) (*model.Worke
 		return nil, err
 	}
 	worker, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Worker])
-	return worker, err
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return worker, nil
 }
 
 // ListWorkers retrieves all the workers with the filter. Checkout WorkerFilter.

@@ -115,6 +115,49 @@ func parsePollID(path string) (string, error) {
 	return id, nil
 }
 
+// parseJobActionID extracts job ID from /jobs/<id>/complete, /fail, /attempts
+func parseJobActionID(path, suffix string) (uuid.UUID, error) {
+	if !strings.HasSuffix(path, suffix) {
+		return uuid.Nil, errInvalidID
+	}
+	trimmed := strings.TrimSuffix(path, suffix)
+	idStr := strings.TrimPrefix(trimmed, "/jobs/")
+	idStr = strings.TrimSuffix(idStr, "/")
+	if idStr == "" || strings.Contains(idStr, "/") {
+		return uuid.Nil, errInvalidID
+	}
+	return uuid.Parse(idStr)
+}
+
+// jobIDFromRequest extracts job ID from request, handling both router PathValue and direct handler tests.
+// Handles /jobs/{id}, /jobs/{id}/complete, /jobs/{id}/fail, /jobs/{id}/attempts.
+func jobIDFromRequest(r *http.Request) (uuid.UUID, error) {
+	if idStr := r.PathValue("id"); idStr != "" {
+		return uuid.Parse(idStr)
+	}
+	// fallback for direct handler tests without router
+	path := strings.Trim(r.URL.Path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[0] != "jobs" || parts[1] == "" {
+		return uuid.Nil, errInvalidID
+	}
+	return uuid.Parse(parts[1])
+}
+
+// requireWorkerID decodes {"worker_id": "..."} and validates it.
+func requireWorkerID(r *http.Request) (string, error) {
+	var req struct {
+		WorkerID string `json:"worker_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(req.WorkerID) == "" {
+		return "", errInvalidID
+	}
+	return req.WorkerID, nil
+}
+
 // createJobRequest mirrors POST /jobs body — scheduled_at remains string to keep JSON flexible,
 // but parsing is delegated to parseScheduledAt to avoid Primitive Obsession in handler.
 type createJobRequest struct {
@@ -186,22 +229,10 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 // GetJob handles GET /jobs/:id
 func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
-	// prefer PathValue when router uses pattern /jobs/{id}, fallback to manual parse for direct handler tests
-	idStr := r.PathValue("id")
-	var id uuid.UUID
-	var err error
-	if idStr != "" {
-		id, err = uuid.Parse(idStr)
-		if err != nil {
-			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
-			return
-		}
-	} else {
-		id, err = parseJobID(r.URL.Path)
-		if err != nil {
-			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
-			return
-		}
+	id, err := jobIDFromRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
 	}
 	job, err := h.store.GetJob(r.Context(), id)
 	if err != nil {
@@ -340,6 +371,95 @@ func (h *Handler) Poll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(job)
+}
+
+// CompleteJob handles POST /jobs/:id/complete {worker_id}
+func (h *Handler) CompleteJob(w http.ResponseWriter, r *http.Request) {
+	jobID, err := jobIDFromRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	workerID, err := requireWorkerID(r)
+	if err != nil {
+		if err == errInvalidID {
+			http.Error(w, `{"error":"worker_id is required"}`, http.StatusBadRequest)
+		} else {
+			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		}
+		return
+	}
+	job, err := h.store.CompleteJob(r.Context(), jobID, workerID)
+	if err != nil {
+		http.Error(w, `{"error":"failed to complete job"}`, http.StatusInternalServerError)
+		return
+	}
+	if job == nil {
+		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+// FailJob handles POST /jobs/:id/fail {worker_id, error}
+func (h *Handler) FailJob(w http.ResponseWriter, r *http.Request) {
+	jobID, err := jobIDFromRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		WorkerID string `json:"worker_id"`
+		Error    string `json:"error"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.WorkerID) == "" {
+		http.Error(w, `{"error":"worker_id is required"}`, http.StatusBadRequest)
+		return
+	}
+	job, err := h.store.FailJob(r.Context(), jobID, req.WorkerID, req.Error)
+	if err != nil {
+		http.Error(w, `{"error":"failed to fail job"}`, http.StatusInternalServerError)
+		return
+	}
+	if job == nil {
+		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+// ListAttempts handles GET /jobs/:id/attempts
+func (h *Handler) ListAttempts(w http.ResponseWriter, r *http.Request) {
+	jobID, err := jobIDFromRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := parsePagination(r)
+	if err != nil {
+		http.Error(w, `{"error":"invalid pagination"}`, http.StatusBadRequest)
+		return
+	}
+	filter := store.JobAttemptFilter{JobID: &jobID}
+	attempts, err := h.store.ListJobAttempts(r.Context(), filter, page)
+	if err != nil {
+		http.Error(w, `{"error":"failed to list attempts"}`, http.StatusInternalServerError)
+		return
+	}
+	if attempts == nil {
+		attempts = []model.JobAttempt{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(attempts)
 }
 
 // ListWorkers handles GET /workers?limit=&offset=

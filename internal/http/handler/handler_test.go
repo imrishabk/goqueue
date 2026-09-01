@@ -16,9 +16,10 @@ import (
 
 // fakeStore is a minimal in-memory stub for Handler tests at the HTTP seam.
 type fakeStore struct {
-	jobs    []model.Job
-	workers []model.Worker
-	listErr error
+	jobs     []model.Job
+	workers  []model.Worker
+	attempts []model.JobAttempt
+	listErr  error
 }
 
 func (f *fakeStore) CreateJob(_ context.Context, job *model.Job) (*model.Job, error) {
@@ -64,6 +65,61 @@ func (f *fakeStore) UpdateJob(_ context.Context, _ uuid.UUID, _ store.JobUpdate)
 	return nil, nil
 }
 func (f *fakeStore) DeleteJob(_ context.Context, _ uuid.UUID) error { return nil }
+
+func (f *fakeStore) CompleteJob(_ context.Context, jobID uuid.UUID, workerID string) (*model.Job, error) {
+	for i, j := range f.jobs {
+		if j.ID == jobID {
+			now := time.Now().UTC()
+			f.jobs[i].Status = model.JobStatusSucceeded
+			f.jobs[i].CompletedAt = now
+			// close open attempt for this worker/job
+			for k, a := range f.attempts {
+				if a.JobID == jobID && a.WorkerID == workerID && a.FinishedAt.IsZero() {
+					f.attempts[k].FinishedAt = now
+					f.attempts[k].Success = true
+					f.attempts[k].WorkerID = workerID
+					break
+				}
+			}
+			// if no open attempt, create one as success
+			found := false
+			for _, a := range f.attempts {
+				if a.JobID == jobID && a.WorkerID == workerID && a.Success {
+					found = true
+					break
+				}
+			}
+			if !found {
+				// create closed attempt if none existed
+				f.attempts = append(f.attempts, model.JobAttempt{ID: uuid.New(), JobID: jobID, WorkerID: workerID, StartedAt: now.Add(-time.Second), FinishedAt: now, Success: true})
+			}
+			cp := f.jobs[i]
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+func (f *fakeStore) FailJob(_ context.Context, jobID uuid.UUID, workerID string, errMsg string) (*model.Job, error) {
+	for i, j := range f.jobs {
+		if j.ID == jobID {
+			now := time.Now().UTC()
+			f.jobs[i].AttemptCount++
+			// record attempt
+			f.attempts = append(f.attempts, model.JobAttempt{
+				ID: uuid.New(), JobID: jobID, WorkerID: workerID, StartedAt: now.Add(-time.Second), FinishedAt: now, Success: false, Error: errMsg,
+			})
+			if f.jobs[i].AttemptCount >= f.jobs[i].MaxAttempts {
+				f.jobs[i].Status = model.JobStatusDead
+				f.jobs[i].DeadAt = now
+			} else {
+				f.jobs[i].Status = model.JobStatusPending
+			}
+			cp := f.jobs[i]
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
 
 func (f *fakeStore) ClaimNextJob(_ context.Context, _ string, capabilities []string) (*model.Job, error) {
 	now := time.Now().UTC()
@@ -117,8 +173,17 @@ func (f *fakeStore) CreateJobAttempt(_ context.Context, ja *model.JobAttempt) (*
 func (f *fakeStore) GetJobAttempt(_ context.Context, _ uuid.UUID) (*model.JobAttempt, error) {
 	return nil, nil
 }
-func (f *fakeStore) ListJobAttempts(_ context.Context, _ store.JobAttemptFilter, _ store.Pagination) ([]model.JobAttempt, error) {
-	return nil, nil
+func (f *fakeStore) ListJobAttempts(_ context.Context, filter store.JobAttemptFilter, _ store.Pagination) ([]model.JobAttempt, error) {
+	if filter.JobID != nil {
+		var out []model.JobAttempt
+		for _, a := range f.attempts {
+			if a.JobID == *filter.JobID {
+				out = append(out, a)
+			}
+		}
+		return out, nil
+	}
+	return f.attempts, nil
 }
 func (f *fakeStore) UpdateJobAttempt(_ context.Context, _ uuid.UUID, _ store.JobAttemptUpdate) (*model.JobAttempt, error) {
 	return nil, nil

@@ -43,6 +43,12 @@ func (f *fakeStore) UpdateJob(_ context.Context, _ uuid.UUID, _ store.JobUpdate)
 	return nil, nil
 }
 func (f *fakeStore) DeleteJob(_ context.Context, _ uuid.UUID) error { return nil }
+func (f *fakeStore) CompleteJob(_ context.Context, _ uuid.UUID, _ string) (*model.Job, error) {
+	return nil, nil
+}
+func (f *fakeStore) FailJob(_ context.Context, _ uuid.UUID, _ string, _ string) (*model.Job, error) {
+	return nil, nil
+}
 func (f *fakeStore) ClaimNextJob(_ context.Context, _ string, caps []string) (*model.Job, error) {
 	now := time.Now().UTC()
 	var candidates []int
