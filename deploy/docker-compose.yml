@@ -1,0 +1,51 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: goqueue-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: distqueue
+      POSTGRES_PASSWORD: distqueue
+      POSTGRES_DB: distqueue
+    ports:
+      - "5462:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U distqueue -d distqueue"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  coordinator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.coordinator
+    container_name: goqueue-coordinator
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://distqueue:distqueue@db:5432/distqueue?sslmode=disable
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    container_name: goqueue-worker
+    depends_on:
+      db:
+        condition: service_healthy
+      coordinator:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://distqueue:distqueue@db:5432/distqueue?sslmode=disable
+    restart: unless-stopped
+    command: ["./worker"]
+
+volumes:
+  pgdata:
