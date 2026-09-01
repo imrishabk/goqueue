@@ -125,6 +125,11 @@ type WorkerStore interface {
 	WorkerReader
 	WorkerUpdater
 	WorkerDeleter
+	WorkerLiveness
+}
+
+type WorkerLiveness interface {
+	SweepDeadWorkers(ctx context.Context, deadBefore time.Time) (deadWorkers int, requeuedJobs int, err error)
 }
 
 type WorkerFilter struct {

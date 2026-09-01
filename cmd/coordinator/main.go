@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/imrishabk/goqueue/internal/database"
 	"github.com/imrishabk/goqueue/internal/http/handler"
@@ -24,7 +27,9 @@ func main() {
 	if connString == "" {
 		log.Fatal("DATABASE_URL not set")
 	}
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	pool, err := database.NewPool(ctx, connString)
 	if err != nil {
 		log.Fatal("failed to establish a database pool:", err)
@@ -34,6 +39,9 @@ func main() {
 	st := store.NewPGStore(pool)
 	h := handler.NewHandler(st)
 	router := routes.NewRouter(h)
+
+	// Liveness sweep: cancellable, every 30s mark workers dead if last_heartbeat < now-45s and requeue their running jobs
+	go runSweep(ctx, st)
 
 	addr := os.Getenv("PORT")
 	if addr == "" {
@@ -45,7 +53,36 @@ func main() {
 	}
 
 	log.Printf("coordinator listening on %s", addr)
-	if err := http.ListenAndServe(addr, middleware.Logger(router)); err != nil {
-		log.Fatal(err)
+	srv := &http.Server{Addr: addr, Handler: middleware.Logger(router)}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+	<-ctx.Done()
+	log.Println("shutting down...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	_ = srv.Shutdown(shutdownCtx)
+}
+
+func runSweep(ctx context.Context, st store.Store) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			deadBefore := time.Now().UTC().Add(-45 * time.Second)
+			dead, requeued, err := st.SweepDeadWorkers(ctx, deadBefore)
+			if err != nil {
+				log.Printf("sweep error: %v", err)
+				continue
+			}
+			if dead > 0 || requeued > 0 {
+				log.Printf("sweep: marked %d workers dead, requeued %d jobs", dead, requeued)
+			}
+		}
 	}
 }

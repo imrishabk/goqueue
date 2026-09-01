@@ -337,6 +337,66 @@ func (pg *pgStore) FailJob(ctx context.Context, jobID uuid.UUID, workerID string
 	})
 }
 
+// SweepDeadWorkers marks workers alive with last_heartbeat < deadBefore as dead,
+// requeues their running jobs to pending, and closes dangling attempts with error='worker died'.
+// Three tables are touched in one transaction intentionally per spec atomicity; helpers keep each step focused.
+func (pg *pgStore) SweepDeadWorkers(ctx context.Context, deadBefore time.Time) (int, int, error) {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	deadIDs, err := pg.markDeadWorkers(ctx, tx, deadBefore)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(deadIDs) == 0 {
+		_ = tx.Commit(ctx)
+		return 0, 0, nil
+	}
+
+	requeued, err := pg.requeueJobsOfDeadWorkers(ctx, tx, deadIDs)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := pg.closeAttemptsOfDeadWorkers(ctx, tx, deadIDs); err != nil {
+		return 0, 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, err
+	}
+	return len(deadIDs), requeued, nil
+}
+
+func (pg *pgStore) markDeadWorkers(ctx context.Context, tx pgx.Tx, deadBefore time.Time) ([]string, error) {
+	rows, err := tx.Query(ctx, `UPDATE workers SET status = 'dead' WHERE status = 'alive' AND last_heartbeat < $1 RETURNING id`, deadBefore)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+func (pg *pgStore) requeueJobsOfDeadWorkers(ctx context.Context, tx pgx.Tx, deadIDs []string) (int, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE jobs SET status = 'pending', updated_at = now()
+		WHERE status = 'running' AND id IN (
+			SELECT job_id FROM job_attempts WHERE worker_id = ANY($1) AND finished_at IS NULL
+		)`, deadIDs)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (pg *pgStore) closeAttemptsOfDeadWorkers(ctx context.Context, tx pgx.Tx, deadIDs []string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE job_attempts SET finished_at = now(), success = false, error = 'worker died'
+		WHERE worker_id = ANY($1) AND finished_at IS NULL`, deadIDs)
+	return err
+}
+
 // GetJobAttempt retrieves job attempts.
 func (pg *pgStore) GetJobAttempt(ctx context.Context, attemptID uuid.UUID) (*model.JobAttempt, error) {
 	query := `

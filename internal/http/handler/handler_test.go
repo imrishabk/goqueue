@@ -243,6 +243,47 @@ func (f *fakeStore) UpdateWorker(_ context.Context, id string, upd store.WorkerU
 }
 func (f *fakeStore) DeleteWorker(_ context.Context, _ string) error { return nil }
 
+func (f *fakeStore) SweepDeadWorkers(_ context.Context, deadBefore time.Time) (int, int, error) {
+	var deadIDs []string
+	for i, w := range f.workers {
+		if w.Status == model.WorkerStatusAlive && w.LastHeartbeat.Before(deadBefore) {
+			f.workers[i].Status = model.WorkerStatusDead
+			deadIDs = append(deadIDs, w.ID)
+		}
+	}
+	if len(deadIDs) == 0 {
+		return 0, 0, nil
+	}
+	deadSet := make(map[string]bool, len(deadIDs))
+	for _, id := range deadIDs {
+		deadSet[id] = true
+	}
+	requeued := 0
+	// requeue running jobs with open attempts from dead workers
+	for i, j := range f.jobs {
+		if j.Status != model.JobStatusRunning {
+			continue
+		}
+		for _, a := range f.attempts {
+			if a.JobID == j.ID && deadSet[a.WorkerID] && a.FinishedAt.IsZero() {
+				f.jobs[i].Status = model.JobStatusPending
+				requeued++
+				break
+			}
+		}
+	}
+	// close open attempts
+	for i, a := range f.attempts {
+		if deadSet[a.WorkerID] && a.FinishedAt.IsZero() {
+			now := time.Now().UTC()
+			f.attempts[i].FinishedAt = now
+			f.attempts[i].Success = false
+			f.attempts[i].Error = "worker died"
+		}
+	}
+	return len(deadIDs), requeued, nil
+}
+
 var _ store.Store = (*fakeStore)(nil)
 
 func TestHealth(t *testing.T) {
