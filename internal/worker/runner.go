@@ -22,6 +22,8 @@ type Config struct {
 	Capabilities      []string
 	PollInterval      time.Duration
 	HeartbeatInterval time.Duration
+	// APIKey, when non-empty, is sent as X-API-Key on every coordinator call.
+	APIKey string
 }
 
 func (c *Config) withDefaults() {
@@ -73,6 +75,9 @@ func (r *Runner) doJSON(method, url string, body any, out any) (int, error) {
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if r.cfg.APIKey != "" {
+		req.Header.Set("X-API-Key", r.cfg.APIKey)
 	}
 	resp, err := r.client.Do(req)
 	if err != nil {

@@ -30,6 +30,7 @@ services:
       PORT: "8080"
       BACKOFF_BASE: 5s
       BACKOFF_CAP: 10m
+      API_KEY: ""
     ports:
       - "8080:8080"
     restart: unless-stopped
@@ -50,6 +51,7 @@ services:
       HOSTNAME: worker-1
       CAPABILITIES: ""
       POLL_INTERVAL: 2s
+      API_KEY: ""
     restart: unless-stopped
     command: ["./worker"]
 

@@ -54,7 +54,7 @@ func main() {
 	}
 
 	log.Printf("coordinator listening on %s", addr)
-	srv := &http.Server{Addr: addr, Handler: middleware.Logger(router)}
+	srv := &http.Server{Addr: addr, Handler: middleware.Logger(middleware.APIKey(os.Getenv("API_KEY"), router))}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)

@@ -51,6 +51,7 @@ func main() {
 		Hostname:       getenv("HOSTNAME", hostname),
 		Capabilities:   caps,
 		PollInterval:   pollInterval,
+		APIKey:         os.Getenv("API_KEY"),
 	}, reg)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
