@@ -8,13 +8,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/imrishabk/goqueue/internal/backoff"
 	"github.com/imrishabk/goqueue/internal/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type pgStore struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	backoff backoff.Policy
 }
 
 const jobClaimOrderBy = "ORDER BY priority DESC, scheduled_at ASC, created_at ASC"
@@ -37,9 +39,25 @@ func (pg *pgStore) withTx(ctx context.Context, fn func(tx pgx.Tx) (*model.Job, e
 	return job, nil
 }
 
-// NewPGStore creates a new Store instance
+// PGConfig tunes Postgres store behavior.
+type PGConfig struct {
+	// Backoff policy for retry scheduling on FailJob.
+	Backoff backoff.Policy
+}
+
+// DefaultPGConfig returns the default store configuration.
+func DefaultPGConfig() PGConfig {
+	return PGConfig{Backoff: backoff.Default()}
+}
+
+// NewPGStore creates a new Store instance with default config.
 func NewPGStore(p *pgxpool.Pool) Store {
-	return &pgStore{pool: p}
+	return NewPGStoreWithConfig(p, DefaultPGConfig())
+}
+
+// NewPGStoreWithConfig creates a new Store instance with the given config.
+func NewPGStoreWithConfig(p *pgxpool.Pool, cfg PGConfig) Store {
+	return &pgStore{pool: p, backoff: cfg.Backoff}
 }
 
 // CreateJob registers a new job in the jobs table.
@@ -321,12 +339,13 @@ func (pg *pgStore) FailJob(ctx context.Context, jobID uuid.UUID, workerID string
 	if err != nil {
 		return nil, err
 	}
-	// Update job
+	// Update job: dead-jobs keep scheduled_at; retries are rescheduled with backoff.
 	var updated *model.Job
 	if deadAt != nil {
 		rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, dead_at = $3, updated_at = now() WHERE id = $4 RETURNING *`, newCount, newStatus, *deadAt, jobID)
 	} else {
-		rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, updated_at = now() WHERE id = $3 RETURNING *`, newCount, newStatus, jobID)
+		retryAt := time.Now().UTC().Add(pg.backoff.Delay(int(newCount)))
+		rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, scheduled_at = $3, updated_at = now() WHERE id = $4 RETURNING *`, newCount, newStatus, retryAt, jobID)
 	}
 	if err != nil {
 		return nil, err

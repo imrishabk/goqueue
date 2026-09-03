@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/imrishabk/goqueue/internal/backoff"
 	"github.com/imrishabk/goqueue/internal/model"
 	"github.com/imrishabk/goqueue/internal/store"
 )
@@ -116,6 +117,8 @@ func (f *fakeStore) FailJob(_ context.Context, jobID uuid.UUID, workerID string,
 				f.jobs[i].DeadAt = timePtr(now)
 			} else {
 				f.jobs[i].Status = model.JobStatusPending
+				// mirror pgStore: reschedule with backoff
+				f.jobs[i].ScheduledAt = now.Add(backoff.Default().Delay(int(f.jobs[i].AttemptCount)))
 			}
 			cp := f.jobs[i]
 			return &cp, nil

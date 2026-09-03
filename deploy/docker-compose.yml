@@ -28,6 +28,8 @@ services:
     environment:
       DATABASE_URL: postgres://distqueue:distqueue@db:5432/distqueue?sslmode=disable
       PORT: "8080"
+      BACKOFF_BASE: 5s
+      BACKOFF_CAP: 10m
     ports:
       - "8080:8080"
     restart: unless-stopped

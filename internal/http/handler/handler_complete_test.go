@@ -78,6 +78,9 @@ func TestFail_RetryThenDead(t *testing.T) {
 	if job.AttemptCount != 1 {
 		t.Fatalf("expected attempt 1, got %d", job.AttemptCount)
 	}
+	if !job.ScheduledAt.After(time.Now().Add(-time.Second)) {
+		t.Fatalf("expected backoff-rescheduled scheduled_at in future, got %s", job.ScheduledAt)
+	}
 	// need to set job back to running for next fail (simulate poll)
 	fs.jobs[0].Status = model.JobStatusRunning
 	// second fail -> pending, attempt 2
@@ -104,6 +107,51 @@ func TestFail_RetryThenDead(t *testing.T) {
 	}
 	if len(fs.attempts) != 3 {
 		t.Fatalf("expected 3 attempts, got %d", len(fs.attempts))
+	}
+}
+
+func TestFail_BackoffHoldback(t *testing.T) {
+	// A failed job must NOT be immediately reclaimable: poll returns 204 until backoff elapses.
+	now := time.Now()
+	fs := &fakeStore{
+		jobs: []model.Job{
+			{ID: uuid.New(), Type: "email", Status: model.JobStatusPending, MaxAttempts: 3, ScheduledAt: now.Add(-time.Minute)},
+		},
+		workers: []model.Worker{{ID: "w1", Capabilities: []string{"email"}}},
+	}
+	h := NewHandler(fs)
+
+	// claim
+	req := httptest.NewRequest(http.MethodPost, "/workers/w1/poll", nil)
+	w := httptest.NewRecorder()
+	h.Poll(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected claim 200, got %d", w.Code)
+	}
+	var claimed model.Job
+	_ = json.NewDecoder(w.Body).Decode(&claimed)
+
+	// fail -> pending with future scheduled_at
+	before := time.Now()
+	body := `{"worker_id":"w1","error":"boom"}`
+	freq := httptest.NewRequest(http.MethodPost, "/jobs/"+claimed.ID.String()+"/fail", bytes.NewBufferString(body))
+	fw := httptest.NewRecorder()
+	h.FailJob(fw, freq)
+	if fw.Code != http.StatusOK {
+		t.Fatalf("expected fail 200, got %d", fw.Code)
+	}
+	var failed model.Job
+	_ = json.NewDecoder(fw.Body).Decode(&failed)
+	if !failed.ScheduledAt.After(before) {
+		t.Fatalf("expected scheduled_at after fail time, got %s", failed.ScheduledAt)
+	}
+
+	// immediate repoll must find nothing (backoff)
+	req2 := httptest.NewRequest(http.MethodPost, "/workers/w1/poll", nil)
+	w2 := httptest.NewRecorder()
+	h.Poll(w2, req2)
+	if w2.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 during backoff, got %d body %s", w2.Code, w2.Body.String())
 	}
 }
 

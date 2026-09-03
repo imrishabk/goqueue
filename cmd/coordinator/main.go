@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/imrishabk/goqueue/internal/backoff"
 	"github.com/imrishabk/goqueue/internal/database"
 	"github.com/imrishabk/goqueue/internal/http/handler"
 	"github.com/imrishabk/goqueue/internal/http/middleware"
@@ -36,7 +37,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	st := store.NewPGStore(pool)
+	st := store.NewPGStoreWithConfig(pool, store.PGConfig{Backoff: backoffPolicyFromEnv()})
 	h := handler.NewHandler(st)
 	router := routes.NewRouter(h)
 
@@ -66,8 +67,23 @@ func main() {
 	_ = srv.Shutdown(shutdownCtx)
 }
 
-func runSweep(ctx context.Context, st store.Store) {
-	ticker := time.NewTicker(30 * time.Second)
+// backoffPolicyFromEnv reads BACKOFF_BASE/BACKOFF_CAP durations, falling back to defaults.
+func backoffPolicyFromEnv() backoff.Policy {
+	p := backoff.Default()
+	if s := os.Getenv("BACKOFF_BASE"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			p.Base = d
+		}
+	}
+	if s := os.Getenv("BACKOFF_CAP"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			p.Max = d
+		}
+	}
+	return p
+}
+
+func runSweep(ctx context.Context, st store.Store) {	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
