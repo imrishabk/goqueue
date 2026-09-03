@@ -573,6 +573,36 @@ func (h *Handler) PatchJob(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(updated)
 }
 
+// Stats handles GET /stats: job counts by status + worker counts.
+// Missing statuses are zero-filled for a stable contract.
+func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.store.Stats(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"failed to load stats"}`, http.StatusInternalServerError)
+		return
+	}
+	jobs := map[model.JobStatus]int64{
+		model.JobStatusPending:   0,
+		model.JobStatusRunning:   0,
+		model.JobStatusSucceeded: 0,
+		model.JobStatusFailed:    0,
+		model.JobStatusDead:      0,
+	}
+	for s, n := range stats.Jobs {
+		jobs[s] = n
+	}
+	workers := map[model.WorkerStatus]int64{
+		model.WorkerStatusAlive: 0,
+		model.WorkerStatusDead:  0,
+	}
+	for s, n := range stats.Workers {
+		workers[s] = n
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"jobs": jobs, "workers": workers})
+}
+
 // ListWorkers handles GET /workers?limit=&offset=
 func (h *Handler) ListWorkers(w http.ResponseWriter, r *http.Request) {
 	page, err := parsePagination(r)

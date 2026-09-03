@@ -12,6 +12,7 @@ func NewRouter(h *handler.Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", h.Health)
+	mux.HandleFunc("GET /stats", h.Stats)
 
 	// jobs
 	mux.HandleFunc("GET /jobs", h.ListJobs)

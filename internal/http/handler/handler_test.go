@@ -292,6 +292,20 @@ func (f *fakeStore) UpdateWorker(_ context.Context, id string, upd store.WorkerU
 }
 func (f *fakeStore) DeleteWorker(_ context.Context, _ string) error { return nil }
 
+func (f *fakeStore) Stats(_ context.Context) (*store.Stats, error) {
+	out := &store.Stats{
+		Jobs:    make(map[model.JobStatus]int64),
+		Workers: make(map[model.WorkerStatus]int64),
+	}
+	for _, j := range f.jobs {
+		out.Jobs[j.Status]++
+	}
+	for _, w := range f.workers {
+		out.Workers[w.Status]++
+	}
+	return out, nil
+}
+
 func (f *fakeStore) SweepDeadWorkers(_ context.Context, deadBefore time.Time) (int, int, error) {
 	var deadIDs []string
 	for i, w := range f.workers {

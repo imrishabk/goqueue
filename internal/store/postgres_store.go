@@ -449,6 +449,46 @@ func (pg *pgStore) closeAttemptsOfDeadWorkers(ctx context.Context, tx pgx.Tx, de
 	return err
 }
 
+// Stats returns job counts by status and worker counts by status.
+func (pg *pgStore) Stats(ctx context.Context) (*Stats, error) {
+	out := &Stats{
+		Jobs:    make(map[model.JobStatus]int64),
+		Workers: make(map[model.WorkerStatus]int64),
+	}
+	rows, err := pg.pool.Query(ctx, `SELECT status, count(*) FROM jobs GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var status string
+		var n int64
+		if err := rows.Scan(&status, &n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.Jobs[model.JobStatus(status)] = n
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows, err = pg.pool.Query(ctx, `SELECT status, count(*) FROM workers GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var status string
+		var n int64
+		if err := rows.Scan(&status, &n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.Workers[model.WorkerStatus(status)] = n
+	}
+	rows.Close()
+	return out, rows.Err()
+}
+
 // GetJobAttempt retrieves job attempts.
 func (pg *pgStore) GetJobAttempt(ctx context.Context, attemptID uuid.UUID) (*model.JobAttempt, error) {
 	query := `

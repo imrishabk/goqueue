@@ -14,6 +14,7 @@ type Store interface {
 	JobStore
 	JobAttemptStore
 	WorkerStore
+	StatsReader
 }
 
 // JobStore defines all the CRUD for jobs
@@ -133,6 +134,17 @@ type WorkerStore interface {
 
 type WorkerLiveness interface {
 	SweepDeadWorkers(ctx context.Context, deadBefore time.Time) (deadWorkers int, requeuedJobs int, err error)
+}
+
+// Stats is an aggregate snapshot for the /stats endpoint.
+type Stats struct {
+	Jobs    map[model.JobStatus]int64    `json:"jobs"`
+	Workers map[model.WorkerStatus]int64 `json:"workers"`
+}
+
+// StatsReader provides aggregate counts.
+type StatsReader interface {
+	Stats(ctx context.Context) (*Stats, error)
 }
 
 type WorkerFilter struct {
