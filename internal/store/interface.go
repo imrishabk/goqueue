@@ -64,6 +64,7 @@ type JobCreator interface {
 
 type JobReader interface {
 	GetJob(ctx context.Context, jobID uuid.UUID) (*model.Job, error)
+	GetJobByIdempotencyKey(ctx context.Context, key string) (*model.Job, error)
 	ListJobs(ctx context.Context, filter JobFilter, page Pagination) ([]model.Job, error)
 }
 

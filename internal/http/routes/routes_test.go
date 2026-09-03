@@ -43,6 +43,9 @@ func (f *fakeStore) ListJobs(_ context.Context, _ store.JobFilter, _ store.Pagin
 func (f *fakeStore) UpdateJob(_ context.Context, _ uuid.UUID, _ store.JobUpdate) (*model.Job, error) {
 	return nil, nil
 }
+func (f *fakeStore) GetJobByIdempotencyKey(_ context.Context, _ string) (*model.Job, error) {
+	return nil, nil
+}
 func (f *fakeStore) DeleteJob(_ context.Context, _ uuid.UUID) error { return nil }
 func (f *fakeStore) CompleteJob(_ context.Context, _ uuid.UUID, _ string) (*model.Job, error) {
 	return nil, nil

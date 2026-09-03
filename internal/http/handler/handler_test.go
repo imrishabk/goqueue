@@ -27,11 +27,28 @@ func (f *fakeStore) CreateJob(_ context.Context, job *model.Job) (*model.Job, er
 	if job.ID == uuid.Nil {
 		job.ID = uuid.New()
 	}
+	// honor idempotency keys like the partial unique index does
+	if job.IdempotencyKey != nil {
+		for _, j := range f.jobs {
+			if j.IdempotencyKey != nil && *j.IdempotencyKey == *job.IdempotencyKey {
+				return nil, store.ErrConflict
+			}
+		}
+	}
 	// store a copy for GetJob tests
 	f.jobs = append(f.jobs, *job)
 	// return copy
 	cp := *job
 	return &cp, nil
+}
+func (f *fakeStore) GetJobByIdempotencyKey(_ context.Context, key string) (*model.Job, error) {
+	for _, j := range f.jobs {
+		if j.IdempotencyKey != nil && *j.IdempotencyKey == key {
+			cp := j
+			return &cp, nil
+		}
+	}
+	return nil, nil
 }
 func (f *fakeStore) GetJob(_ context.Context, id uuid.UUID) (*model.Job, error) {
 	for _, j := range f.jobs {

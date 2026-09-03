@@ -3,6 +3,7 @@ package store
 // Implementation of postgres for Store API
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,8 +12,14 @@ import (
 	"github.com/imrishabk/goqueue/internal/backoff"
 	"github.com/imrishabk/goqueue/internal/model"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrConflict is returned when a write loses a uniqueness race (e.g. two
+// concurrent POST /jobs with the same Idempotency-Key). Callers should
+// re-read the existing row.
+var ErrConflict = errors.New("conflicting concurrent write")
 
 type pgStore struct {
 	pool    *pgxpool.Pool
@@ -63,8 +70,8 @@ func NewPGStoreWithConfig(p *pgxpool.Pool, cfg PGConfig) Store {
 // CreateJob registers a new job in the jobs table.
 func (pg *pgStore) CreateJob(ctx context.Context, job *model.Job) (*model.Job, error) {
 	query := `
-	INSERT INTO jobs (type, payload, status, priority, max_attempts, attempt_count, scheduled_at)
-	VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *;
+	INSERT INTO jobs (type, payload, status, priority, max_attempts, attempt_count, scheduled_at, idempotency_key)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *;
 	`
 	rows, err := pg.pool.Query(ctx, query,
 		job.Type,
@@ -73,8 +80,16 @@ func (pg *pgStore) CreateJob(ctx context.Context, job *model.Job) (*model.Job, e
 		job.Priority,
 		job.MaxAttempts,
 		job.AttemptCount,
-		job.ScheduledAt)
+		job.ScheduledAt,
+		job.IdempotencyKey)
 	if err != nil {
+		// Lost an idempotency race: another request inserted this key first.
+		if job.IdempotencyKey != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return nil, ErrConflict
+			}
+		}
 		return nil, err
 	}
 	created, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
@@ -135,6 +150,22 @@ func (pg *pgStore) GetJob(ctx context.Context, jobID uuid.UUID) (*model.Job, err
 	SELECT * FROM jobs WHERE id = $1;
 	`
 	rows, err := pg.pool.Query(ctx, query, jobID)
+	if err != nil {
+		return nil, err
+	}
+	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return job, nil
+}
+
+// GetJobByIdempotencyKey retrieves a job by its idempotency key, or nil if none.
+func (pg *pgStore) GetJobByIdempotencyKey(ctx context.Context, key string) (*model.Job, error) {
+	rows, err := pg.pool.Query(ctx, `SELECT * FROM jobs WHERE idempotency_key = $1`, key)
 	if err != nil {
 		return nil, err
 	}

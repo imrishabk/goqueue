@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -217,8 +218,31 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 		ScheduledAt:  scheduledAt,
 	}
 
+	// Idempotency-Key: replay returns the original job (200) instead of duplicating.
+	if key := strings.TrimSpace(r.Header.Get("Idempotency-Key")); key != "" {
+		job.IdempotencyKey = &key
+		if existing, err := h.store.GetJobByIdempotencyKey(r.Context(), key); err != nil {
+			http.Error(w, `{"error":"failed to check idempotency key"}`, http.StatusInternalServerError)
+			return
+		} else if existing != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(existing)
+			return
+		}
+	}
+
 	created, err := h.store.CreateJob(r.Context(), job)
 	if err != nil {
+		// Lost a concurrent-insert race on the same key: return the winner.
+		if job.IdempotencyKey != nil && errors.Is(err, store.ErrConflict) {
+			if existing, rerr := h.store.GetJobByIdempotencyKey(r.Context(), *job.IdempotencyKey); rerr == nil && existing != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(existing)
+				return
+			}
+		}
 		http.Error(w, `{"error":"failed to create job"}`, http.StatusInternalServerError)
 		return
 	}

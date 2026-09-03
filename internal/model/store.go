@@ -19,13 +19,15 @@ const (
 )
 
 type Job struct {
-	ID           uuid.UUID       `json:"id" db:"id"`
-	Type         string          `json:"type" db:"type"`
-	Status       JobStatus       `json:"status" db:"status"`
-	Payload      json.RawMessage `json:"payload" db:"payload"`
-	Priority     int16           `json:"priority" db:"priority"`
-	MaxAttempts  int16           `json:"max_attempts" db:"max_attempts"`
-	AttemptCount int16           `json:"attempt_count" db:"attempt_count"`
+	ID             uuid.UUID       `json:"id" db:"id"`
+	Type           string          `json:"type" db:"type"`
+	Status         JobStatus       `json:"status" db:"status"`
+	Payload        json.RawMessage `json:"payload" db:"payload"`
+	Priority       int16           `json:"priority" db:"priority"`
+	MaxAttempts    int16           `json:"max_attempts" db:"max_attempts"`
+	AttemptCount   int16           `json:"attempt_count" db:"attempt_count"`
+	// IdempotencyKey is NULL unless the client sent Idempotency-Key.
+	IdempotencyKey *string         `json:"idempotency_key" db:"idempotency_key"`
 	CreatedAt    time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at" db:"updated_at"`
 	ScheduledAt  time.Time       `json:"scheduled_at" db:"scheduled_at"`

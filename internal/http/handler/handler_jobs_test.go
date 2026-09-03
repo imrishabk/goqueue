@@ -108,6 +108,50 @@ func TestGetJob_NotFound(t *testing.T) {
 	}
 }
 
+func TestCreateJob_IdempotentReplay(t *testing.T) {
+	h := NewHandler(&fakeStore{})
+	newReq := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/jobs", bytes.NewBufferString(`{"type":"email","payload":{"x":1}}`))
+		r.Header.Set("Idempotency-Key", "key-123")
+		return r
+	}
+	w1 := httptest.NewRecorder()
+	h.CreateJob(w1, newReq())
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body %s", w1.Code, w1.Body.String())
+	}
+	var first model.Job
+	_ = json.NewDecoder(w1.Body).Decode(&first)
+
+	w2 := httptest.NewRecorder()
+	h.CreateJob(w2, newReq())
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected replay 200, got %d body %s", w2.Code, w2.Body.String())
+	}
+	var second model.Job
+	_ = json.NewDecoder(w2.Body).Decode(&second)
+	if first.ID != second.ID {
+		t.Fatalf("replay must return same job: %s vs %s", first.ID, second.ID)
+	}
+}
+
+func TestCreateJob_DistinctKeys(t *testing.T) {
+	fs := &fakeStore{}
+	h := NewHandler(fs)
+	for _, k := range []string{"k1", "k2"} {
+		r := httptest.NewRequest(http.MethodPost, "/jobs", bytes.NewBufferString(`{"type":"email","payload":{}}`))
+		r.Header.Set("Idempotency-Key", k)
+		w := httptest.NewRecorder()
+		h.CreateJob(w, r)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("expected 201 for key %s, got %d", k, w.Code)
+		}
+	}
+	if len(fs.jobs) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(fs.jobs))
+	}
+}
+
 func TestGetJob_InvalidUUID(t *testing.T) {
 	h := NewHandler(&fakeStore{})
 	req := httptest.NewRequest(http.MethodGet, "/jobs/not-a-uuid", nil)
