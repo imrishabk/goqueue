@@ -20,6 +20,8 @@ func NewRouter(h *handler.Handler) http.Handler {
 	mux.HandleFunc("POST /jobs/{id}/complete", h.CompleteJob)
 	mux.HandleFunc("POST /jobs/{id}/fail", h.FailJob)
 	mux.HandleFunc("GET /jobs/{id}/attempts", h.ListAttempts)
+	mux.HandleFunc("DELETE /jobs/{id}", h.DeleteJob)
+	mux.HandleFunc("PATCH /jobs/{id}", h.PatchJob)
 
 	// workers
 	mux.HandleFunc("POST /workers/register", h.RegisterWorker)

@@ -462,6 +462,93 @@ func (h *Handler) ListAttempts(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(attempts)
 }
 
+// DeleteJob handles DELETE /jobs/:id.
+// Non-running jobs are removed (204); running jobs conflict (409) so an
+// owner can't pull work out from under a worker. Missing jobs are 404.
+func (h *Handler) DeleteJob(w http.ResponseWriter, r *http.Request) {
+	jobID, err := jobIDFromRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	job, err := h.store.GetJob(r.Context(), jobID)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get job"}`, http.StatusInternalServerError)
+		return
+	}
+	if job == nil {
+		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		return
+	}
+	if job.Status == model.JobStatusRunning {
+		http.Error(w, `{"error":"job is running"}`, http.StatusConflict)
+		return
+	}
+	if err := h.store.DeleteJob(r.Context(), jobID); err != nil {
+		http.Error(w, `{"error":"failed to delete job"}`, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// patchJobRequest mirrors PATCH /jobs body; at least one field required.
+type patchJobRequest struct {
+	Priority    *int16  `json:"priority"`
+	MaxAttempts *int16  `json:"max_attempts"`
+	ScheduledAt *string `json:"scheduled_at"`
+}
+
+// PatchJob handles PATCH /jobs/:id for priority/max_attempts/scheduled_at.
+func (h *Handler) PatchJob(w http.ResponseWriter, r *http.Request) {
+	jobID, err := jobIDFromRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	var req patchJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Priority == nil && req.MaxAttempts == nil && req.ScheduledAt == nil {
+		http.Error(w, `{"error":"nothing to update"}`, http.StatusBadRequest)
+		return
+	}
+	if req.MaxAttempts != nil && *req.MaxAttempts <= 0 {
+		http.Error(w, `{"error":"max_attempts must be > 0"}`, http.StatusBadRequest)
+		return
+	}
+	upd := store.JobUpdate{Priority: req.Priority, MaxAttempts: req.MaxAttempts}
+	if req.ScheduledAt != nil {
+		t, err := parseScheduledAt(req.ScheduledAt)
+		if err != nil {
+			http.Error(w, `{"error":"scheduled_at must be RFC3339"}`, http.StatusBadRequest)
+			return
+		}
+		upd.ScheduledAt = &t
+	}
+	existing, err := h.store.GetJob(r.Context(), jobID)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get job"}`, http.StatusInternalServerError)
+		return
+	}
+	if existing == nil {
+		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		return
+	}
+	updated, err := h.store.UpdateJob(r.Context(), jobID, upd)
+	if err != nil {
+		http.Error(w, `{"error":"failed to update job"}`, http.StatusInternalServerError)
+		return
+	}
+	if updated == nil {
+		updated = existing
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(updated)
+}
+
 // ListWorkers handles GET /workers?limit=&offset=
 func (h *Handler) ListWorkers(w http.ResponseWriter, r *http.Request) {
 	page, err := parsePagination(r)

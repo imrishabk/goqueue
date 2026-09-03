@@ -162,7 +162,11 @@ func main() {
 			fmt.Sprintf("%s/jobs/%s/complete", coordinator, job.ID.String()),
 			map[string]any{"worker_id": workerID}, &done)
 		if err != nil || code != http.StatusOK {
-			log.Printf("complete %s -> %d err=%v", job.ID, code, err)
+			if code == http.StatusNotFound {
+				log.Printf("complete %s -> 404 job gone (deleted?), moving on", job.ID)
+			} else {
+				log.Printf("complete %s -> %d err=%v", job.ID, code, err)
+			}
 			continue
 		}
 		log.Printf("completed job %s", job.ID)

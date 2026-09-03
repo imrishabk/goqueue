@@ -62,10 +62,36 @@ func (f *fakeStore) ListJobs(_ context.Context, _ store.JobFilter, page store.Pa
 	}
 	return f.jobs[start:end], nil
 }
-func (f *fakeStore) UpdateJob(_ context.Context, _ uuid.UUID, _ store.JobUpdate) (*model.Job, error) {
+func (f *fakeStore) UpdateJob(_ context.Context, id uuid.UUID, upd store.JobUpdate) (*model.Job, error) {
+	for i, j := range f.jobs {
+		if j.ID == id {
+			if upd.Priority != nil {
+				f.jobs[i].Priority = *upd.Priority
+			}
+			if upd.MaxAttempts != nil {
+				f.jobs[i].MaxAttempts = *upd.MaxAttempts
+			}
+			if upd.ScheduledAt != nil {
+				f.jobs[i].ScheduledAt = *upd.ScheduledAt
+			}
+			if upd.Status != nil {
+				f.jobs[i].Status = *upd.Status
+			}
+			cp := f.jobs[i]
+			return &cp, nil
+		}
+	}
 	return nil, nil
 }
-func (f *fakeStore) DeleteJob(_ context.Context, _ uuid.UUID) error { return nil }
+func (f *fakeStore) DeleteJob(_ context.Context, id uuid.UUID) error {
+	for i, j := range f.jobs {
+		if j.ID == id {
+			f.jobs = append(f.jobs[:i], f.jobs[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
 
 // timePtr helper for nullable timestamp fields in tests.
 func timePtr(t time.Time) *time.Time { return &t }

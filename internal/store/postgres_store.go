@@ -616,6 +616,9 @@ func (pg *pgStore) UpdateJob(ctx context.Context, jobID uuid.UUID, update JobUpd
 	if update.DeadAt != nil {
 		addUpdates("dead_at = $%d", *update.DeadAt)
 	}
+	if update.ScheduledAt != nil {
+		addUpdates("scheduled_at = $%d", *update.ScheduledAt)
+	}
 	if len(updates) == 0 {
 		return nil, fmt.Errorf("no update data passed")
 	}

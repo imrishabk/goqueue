@@ -55,6 +55,7 @@ type JobUpdate struct {
 	MaxAttempts *int16
 	CompletedAt *time.Time
 	DeadAt      *time.Time
+	ScheduledAt *time.Time
 }
 
 type JobCreator interface {
