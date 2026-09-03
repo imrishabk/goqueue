@@ -99,6 +99,7 @@ type JobAttemptUpdate struct {
 	FinishedAt *time.Time
 	Success    *bool
 	Error      *string
+	// DurationMS is read-only (GENERATED ALWAYS column); set on the struct is ignored by UpdateJobAttempt.
 	DurationMS *int
 }
 
@@ -147,7 +148,7 @@ type WorkerUpdate struct {
 	Hostname      *string
 	Status        *model.WorkerStatus
 	LastHeartbeat *time.Time
-	RegisterdAt   *time.Time
+	RegisteredAt  *time.Time
 }
 
 type WorkerCreator interface {

@@ -57,5 +57,5 @@ type Worker struct {
 	Status        WorkerStatus `json:"status" db:"status"`
 	Capabilities  []string     `json:"capabilities" db:"capabilities"`
 	LastHeartbeat time.Time    `json:"last_heartbeat" db:"last_heartbeat"`
-	RegisterdAt   time.Time    `json:"registered_at" db:"registered_at"`
+	RegisteredAt  time.Time    `json:"registered_at" db:"registered_at"`
 }

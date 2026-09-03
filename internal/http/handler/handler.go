@@ -280,7 +280,7 @@ func (h *Handler) RegisterWorker(w http.ResponseWriter, r *http.Request) {
 		Status:        model.WorkerStatusAlive,
 		Capabilities:  req.Capabilities,
 		LastHeartbeat: now,
-		RegisterdAt:   now,
+		RegisteredAt:  now,
 	}
 	created, err := h.store.CreateWorker(r.Context(), worker)
 	if err != nil {

@@ -181,6 +181,8 @@ func (pg *pgStore) ListJobs(ctx context.Context, filter JobFilter, page Paginati
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
+	// NB: listing order is ops convenience, NOT dispatch order.
+	// Dispatch ordering lives in jobClaimOrderBy (priority DESC, scheduled_at ASC, created_at ASC).
 	query += " ORDER BY scheduled_at ASC"
 	if page.Limit != nil {
 		query += fmt.Sprintf(" LIMIT $%d", argPos)
@@ -271,7 +273,7 @@ func (pg *pgStore) ClaimNextJob(ctx context.Context, workerID string, capabiliti
 // CompleteJob marks a running job as succeeded and closes its open attempt.
 func (pg *pgStore) CompleteJob(ctx context.Context, jobID uuid.UUID, workerID string) (*model.Job, error) {
 	return pg.withTx(ctx, func(tx pgx.Tx) (*model.Job, error) {
-		rows, err := tx.Query(ctx, `UPDATE jobs SET status = 'succeeded', completed_at = now(), updated_at = now() WHERE id = $1 RETURNING *`, jobID)
+		rows, err := tx.Query(ctx, `UPDATE jobs SET status = 'succeeded', completed_at = now(), updated_at = now() WHERE id = $1 AND status = 'running' RETURNING *`, jobID)
 		if err != nil {
 			return nil, err
 		}
@@ -642,9 +644,7 @@ func (pg *pgStore) UpdateJobAttempt(ctx context.Context, jobAttemptID uuid.UUID,
 	if update.Error != nil {
 		addUpdates("error = $%d", *update.Error)
 	}
-	if update.DurationMS != nil {
-		addUpdates("duration_ms = $%d", *update.DurationMS)
-	}
+	// NB: duration_ms is GENERATED ALWAYS AS (...) STORED — never updated directly.
 	if len(updates) == 0 {
 		return nil, fmt.Errorf("no update data passed")
 	}
@@ -688,8 +688,8 @@ func (pg *pgStore) UpdateWorker(ctx context.Context, workerID string, update Wor
 	if update.LastHeartbeat != nil {
 		addUpdates("last_heartbeat = $%d", *update.LastHeartbeat)
 	}
-	if update.RegisterdAt != nil {
-		addUpdates("registered_at = $%d", *update.RegisterdAt)
+	if update.RegisteredAt != nil {
+		addUpdates("registered_at = $%d", *update.RegisteredAt)
 	}
 	if len(updates) == 0 {
 		return nil, fmt.Errorf("no update data passed")
