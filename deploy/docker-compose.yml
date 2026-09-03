@@ -43,7 +43,11 @@ services:
       coordinator:
         condition: service_started
     environment:
-      DATABASE_URL: postgres://distqueue:distqueue@db:5432/distqueue?sslmode=disable
+      COORDINATOR_URL: http://coordinator:8080
+      WORKER_ID: worker-1
+      HOSTNAME: worker-1
+      CAPABILITIES: ""
+      POLL_INTERVAL: 2s
     restart: unless-stopped
     command: ["./worker"]
 
