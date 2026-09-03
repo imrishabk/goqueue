@@ -35,11 +35,11 @@ func TestComplete_Success(t *testing.T) {
 	if job.Status != model.JobStatusSucceeded {
 		t.Fatalf("expected succeeded, got %s", job.Status)
 	}
-	if job.CompletedAt.IsZero() {
+	if job.CompletedAt == nil {
 		t.Fatalf("expected completed_at set")
 	}
 	// attempt should be closed
-	if len(fs.attempts) == 0 || !fs.attempts[0].Success || fs.attempts[0].FinishedAt.IsZero() {
+	if len(fs.attempts) == 0 || !fs.attempts[0].Success || fs.attempts[0].FinishedAt == nil {
 		t.Fatalf("expected attempt success true and finished_at set, got %+v", fs.attempts[0])
 	}
 }
@@ -99,7 +99,7 @@ func TestFail_RetryThenDead(t *testing.T) {
 	if job3.Status != model.JobStatusDead {
 		t.Fatalf("expected dead after 3rd, got %s", job3.Status)
 	}
-	if job3.DeadAt.IsZero() {
+	if job3.DeadAt == nil {
 		t.Fatalf("expected dead_at set")
 	}
 	if len(fs.attempts) != 3 {
@@ -112,7 +112,7 @@ func TestListAttempts(t *testing.T) {
 	fs := &fakeStore{
 		jobs: []model.Job{{ID: jobID}},
 		attempts: []model.JobAttempt{
-			{ID: uuid.New(), JobID: jobID, WorkerID: "w1", StartedAt: time.Now().Add(-2 * time.Second), FinishedAt: time.Now().Add(-time.Second), Success: false},
+			{ID: uuid.New(), JobID: jobID, WorkerID: "w1", StartedAt: time.Now().Add(-2 * time.Second), FinishedAt: timePtr(time.Now().Add(-time.Second)), Success: false},
 			{ID: uuid.New(), JobID: jobID, WorkerID: "w1", StartedAt: time.Now(), Success: true},
 		},
 	}

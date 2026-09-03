@@ -256,10 +256,10 @@ func (pg *pgStore) ClaimNextJob(ctx context.Context, workerID string, capabiliti
 	}
 	job := *jobPtr
 
-	// Insert job attempt
+	// Insert job attempt (open: finished_at NULL; success/error always written non-null)
 	_, err = tx.Exec(ctx, `
-		INSERT INTO job_attempts (job_id, worker_id, started_at)
-		VALUES ($1, $2, now())`, jobID, workerID)
+		INSERT INTO job_attempts (job_id, worker_id, started_at, success, error)
+		VALUES ($1, $2, now(), false, '')`, jobID, workerID)
 	if err != nil {
 		return nil, err
 	}

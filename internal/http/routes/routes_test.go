@@ -157,7 +157,7 @@ func (f *fakeStore) SweepDeadWorkers(_ context.Context, deadBefore time.Time) (i
 			continue
 		}
 		for _, a := range f.attempts {
-			if a.JobID == j.ID && deadSet[a.WorkerID] && a.FinishedAt.IsZero() {
+			if a.JobID == j.ID && deadSet[a.WorkerID] && a.FinishedAt == nil {
 				f.jobs[i].Status = model.JobStatusPending
 				requeued++
 				break
@@ -165,8 +165,9 @@ func (f *fakeStore) SweepDeadWorkers(_ context.Context, deadBefore time.Time) (i
 		}
 	}
 	for i, a := range f.attempts {
-		if deadSet[a.WorkerID] && a.FinishedAt.IsZero() {
-			f.attempts[i].FinishedAt = time.Now().UTC()
+		if deadSet[a.WorkerID] && a.FinishedAt == nil {
+			now := time.Now().UTC()
+			f.attempts[i].FinishedAt = &now
 			f.attempts[i].Success = false
 			f.attempts[i].Error = "worker died"
 		}

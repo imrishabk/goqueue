@@ -43,7 +43,7 @@ func TestSweep_MarksDeadAndRequeues(t *testing.T) {
 	if fs.jobs[0].Status != model.JobStatusPending {
 		t.Fatalf("expected job pending, got %s", fs.jobs[0].Status)
 	}
-	if fs.attempts[0].FinishedAt.IsZero() || fs.attempts[0].Error != "worker died" {
+	if fs.attempts[0].FinishedAt == nil || fs.attempts[0].Error != "worker died" {
 		t.Fatalf("expected attempt closed with worker died, got %+v", fs.attempts[0])
 	}
 }

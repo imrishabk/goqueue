@@ -54,7 +54,7 @@ type JobUpdate struct {
 	Priority    *int16
 	MaxAttempts *int16
 	CompletedAt *time.Time
-	DeadAt      *int16
+	DeadAt      *time.Time
 }
 
 type JobCreator interface {

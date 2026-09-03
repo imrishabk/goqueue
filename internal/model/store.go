@@ -29,19 +29,23 @@ type Job struct {
 	CreatedAt    time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at" db:"updated_at"`
 	ScheduledAt  time.Time       `json:"scheduled_at" db:"scheduled_at"`
-	CompletedAt  time.Time       `json:"completed_at" db:"completed_at"`
-	DeadAt       time.Time       `json:"dead_at" db:"dead_at"`
+	// CompletedAt/DeadAt are NULL until the job succeeds / dead-letters.
+	CompletedAt  *time.Time      `json:"completed_at" db:"completed_at"`
+	DeadAt       *time.Time      `json:"dead_at" db:"dead_at"`
 }
 
 type JobAttempt struct {
-	ID         uuid.UUID `json:"id" db:"id"`
-	JobID      uuid.UUID `json:"job_id" db:"job_id"`
-	WorkerID   string    `json:"worker_id" db:"worker_id"`
-	StartedAt  time.Time `json:"started_at" db:"started_at"`
-	FinishedAt time.Time `json:"finished_at" db:"finished_at"`
-	Success    bool      `json:"success" db:"success"`
-	Error      string    `json:"error" db:"error"`
-	DurationMS int       `json:"duration_ms" db:"duration_ms"`
+	ID         uuid.UUID  `json:"id" db:"id"`
+	JobID      uuid.UUID  `json:"job_id" db:"job_id"`
+	WorkerID   string     `json:"worker_id" db:"worker_id"`
+	StartedAt  time.Time  `json:"started_at" db:"started_at"`
+	// FinishedAt is NULL while the attempt is open.
+	FinishedAt *time.Time `json:"finished_at" db:"finished_at"`
+	// Success/Error are always written (open attempts use false/'').
+	Success    bool       `json:"success" db:"success"`
+	Error      string     `json:"error" db:"error"`
+	// DurationMS is NULL while unfinished (generated from finished_at-started_at).
+	DurationMS *int       `json:"duration_ms" db:"duration_ms"`
 }
 
 type WorkerStatus string

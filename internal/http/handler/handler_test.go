@@ -66,16 +66,19 @@ func (f *fakeStore) UpdateJob(_ context.Context, _ uuid.UUID, _ store.JobUpdate)
 }
 func (f *fakeStore) DeleteJob(_ context.Context, _ uuid.UUID) error { return nil }
 
+// timePtr helper for nullable timestamp fields in tests.
+func timePtr(t time.Time) *time.Time { return &t }
+
 func (f *fakeStore) CompleteJob(_ context.Context, jobID uuid.UUID, workerID string) (*model.Job, error) {
 	for i, j := range f.jobs {
 		if j.ID == jobID {
 			now := time.Now().UTC()
 			f.jobs[i].Status = model.JobStatusSucceeded
-			f.jobs[i].CompletedAt = now
+			f.jobs[i].CompletedAt = timePtr(now)
 			// close open attempt for this worker/job
 			for k, a := range f.attempts {
-				if a.JobID == jobID && a.WorkerID == workerID && a.FinishedAt.IsZero() {
-					f.attempts[k].FinishedAt = now
+				if a.JobID == jobID && a.WorkerID == workerID && a.FinishedAt == nil {
+					f.attempts[k].FinishedAt = timePtr(now)
 					f.attempts[k].Success = true
 					f.attempts[k].WorkerID = workerID
 					break
@@ -91,7 +94,7 @@ func (f *fakeStore) CompleteJob(_ context.Context, jobID uuid.UUID, workerID str
 			}
 			if !found {
 				// create closed attempt if none existed
-				f.attempts = append(f.attempts, model.JobAttempt{ID: uuid.New(), JobID: jobID, WorkerID: workerID, StartedAt: now.Add(-time.Second), FinishedAt: now, Success: true})
+				f.attempts = append(f.attempts, model.JobAttempt{ID: uuid.New(), JobID: jobID, WorkerID: workerID, StartedAt: now.Add(-time.Second), FinishedAt: timePtr(now), Success: true})
 			}
 			cp := f.jobs[i]
 			return &cp, nil
@@ -106,11 +109,11 @@ func (f *fakeStore) FailJob(_ context.Context, jobID uuid.UUID, workerID string,
 			f.jobs[i].AttemptCount++
 			// record attempt
 			f.attempts = append(f.attempts, model.JobAttempt{
-				ID: uuid.New(), JobID: jobID, WorkerID: workerID, StartedAt: now.Add(-time.Second), FinishedAt: now, Success: false, Error: errMsg,
+				ID: uuid.New(), JobID: jobID, WorkerID: workerID, StartedAt: now.Add(-time.Second), FinishedAt: timePtr(now), Success: false, Error: errMsg,
 			})
 			if f.jobs[i].AttemptCount >= f.jobs[i].MaxAttempts {
 				f.jobs[i].Status = model.JobStatusDead
-				f.jobs[i].DeadAt = now
+				f.jobs[i].DeadAt = timePtr(now)
 			} else {
 				f.jobs[i].Status = model.JobStatusPending
 			}
@@ -265,7 +268,7 @@ func (f *fakeStore) SweepDeadWorkers(_ context.Context, deadBefore time.Time) (i
 			continue
 		}
 		for _, a := range f.attempts {
-			if a.JobID == j.ID && deadSet[a.WorkerID] && a.FinishedAt.IsZero() {
+			if a.JobID == j.ID && deadSet[a.WorkerID] && a.FinishedAt == nil {
 				f.jobs[i].Status = model.JobStatusPending
 				requeued++
 				break
@@ -274,9 +277,9 @@ func (f *fakeStore) SweepDeadWorkers(_ context.Context, deadBefore time.Time) (i
 	}
 	// close open attempts
 	for i, a := range f.attempts {
-		if deadSet[a.WorkerID] && a.FinishedAt.IsZero() {
+		if deadSet[a.WorkerID] && a.FinishedAt == nil {
 			now := time.Now().UTC()
-			f.attempts[i].FinishedAt = now
+			f.attempts[i].FinishedAt = timePtr(now)
 			f.attempts[i].Success = false
 			f.attempts[i].Error = "worker died"
 		}
