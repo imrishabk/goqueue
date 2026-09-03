@@ -15,12 +15,12 @@ import (
 
 // fakeCoord is a minimal in-memory coordinator for Runner tests.
 type fakeCoord struct {
-	mu        sync.Mutex
-	jobID     string
-	job       map[string]any
-	polled    int
-	completed []string
-	failed    map[string]string
+	mu          sync.Mutex
+	jobID       string
+	job         map[string]any
+	polled      int
+	completed   []string
+	failed      map[string]string
 	complete404 bool
 }
 

@@ -365,27 +365,27 @@ func (pg *pgStore) FailJob(ctx context.Context, jobID uuid.UUID, workerID string
 		} else {
 			newStatus = model.JobStatusPending
 		}
-	// Record attempt
-	_, err = tx.Exec(ctx, `INSERT INTO job_attempts (job_id, worker_id, started_at, finished_at, success, error) VALUES ($1, $2, now() - interval '1 second', now(), false, $3)`, jobID, workerID, errorMsg)
-	if err != nil {
-		return nil, err
-	}
-	// Update job: dead-jobs keep scheduled_at; retries are rescheduled with backoff.
-	var updated *model.Job
-	if deadAt != nil {
-		rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, dead_at = $3, updated_at = now() WHERE id = $4 RETURNING *`, newCount, newStatus, *deadAt, jobID)
-	} else {
-		retryAt := time.Now().UTC().Add(pg.backoff.Delay(int(newCount)))
-		rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, scheduled_at = $3, updated_at = now() WHERE id = $4 RETURNING *`, newCount, newStatus, retryAt, jobID)
-	}
-	if err != nil {
-		return nil, err
-	}
-	updated, err = pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
-	if err != nil {
-		return nil, err
-	}
-	return updated, nil
+		// Record attempt
+		_, err = tx.Exec(ctx, `INSERT INTO job_attempts (job_id, worker_id, started_at, finished_at, success, error) VALUES ($1, $2, now() - interval '1 second', now(), false, $3)`, jobID, workerID, errorMsg)
+		if err != nil {
+			return nil, err
+		}
+		// Update job: dead-jobs keep scheduled_at; retries are rescheduled with backoff.
+		var updated *model.Job
+		if deadAt != nil {
+			rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, dead_at = $3, updated_at = now() WHERE id = $4 RETURNING *`, newCount, newStatus, *deadAt, jobID)
+		} else {
+			retryAt := time.Now().UTC().Add(pg.backoff.Delay(int(newCount)))
+			rows, err = tx.Query(ctx, `UPDATE jobs SET attempt_count = $1, status = $2, scheduled_at = $3, updated_at = now() WHERE id = $4 RETURNING *`, newCount, newStatus, retryAt, jobID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		updated, err = pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+		if err != nil {
+			return nil, err
+		}
+		return updated, nil
 	})
 }
 

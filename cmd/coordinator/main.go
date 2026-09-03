@@ -83,7 +83,8 @@ func backoffPolicyFromEnv() backoff.Policy {
 	return p
 }
 
-func runSweep(ctx context.Context, st store.Store) {	ticker := time.NewTicker(30 * time.Second)
+func runSweep(ctx context.Context, st store.Store) {
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {

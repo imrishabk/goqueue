@@ -13,7 +13,9 @@ func TestRegistry_ExecuteRegistered(t *testing.T) {
 	called := false
 	r.Register("email", func(ctx context.Context, p json.RawMessage) error {
 		called = true
-		var v struct{ To string `json:"to"` }
+		var v struct {
+			To string `json:"to"`
+		}
 		if err := json.Unmarshal(p, &v); err != nil {
 			t.Fatalf("payload: %v", err)
 		}

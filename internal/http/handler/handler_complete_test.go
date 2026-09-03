@@ -15,7 +15,7 @@ import (
 func TestComplete_Success(t *testing.T) {
 	jobID := uuid.New()
 	fs := &fakeStore{
-		jobs: []model.Job{{ID: jobID, Type: "email", Status: model.JobStatusRunning, MaxAttempts: 3, AttemptCount: 0}},
+		jobs:    []model.Job{{ID: jobID, Type: "email", Status: model.JobStatusRunning, MaxAttempts: 3, AttemptCount: 0}},
 		workers: []model.Worker{{ID: "w1"}},
 	}
 	// seed attempt as if claimed
@@ -58,7 +58,7 @@ func TestComplete_NotFound(t *testing.T) {
 func TestFail_RetryThenDead(t *testing.T) {
 	jobID := uuid.New()
 	fs := &fakeStore{
-		jobs: []model.Job{{ID: jobID, Type: "email", Status: model.JobStatusRunning, MaxAttempts: 3, AttemptCount: 0}},
+		jobs:    []model.Job{{ID: jobID, Type: "email", Status: model.JobStatusRunning, MaxAttempts: 3, AttemptCount: 0}},
 		workers: []model.Worker{{ID: "w1"}},
 	}
 	h := NewHandler(fs)
