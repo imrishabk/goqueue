@@ -1,10 +1,33 @@
 package middleware
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"time"
 )
+
+// statusCodes maps HTTP statuses to stable machine-readable error codes
+// per the API contract.
+var statusCodes = map[int]string{
+	http.StatusBadRequest:          "invalid_request",
+	http.StatusUnauthorized:        "unauthorized",
+	http.StatusNotFound:            "not_found",
+	http.StatusMethodNotAllowed:    "method_not_allowed",
+	http.StatusConflict:            "conflict",
+	http.StatusInternalServerError: "internal",
+}
+
+// WriteError writes {"error":msg,"code":code} JSON with the given status.
+func WriteError(w http.ResponseWriter, status int, msg string) {
+	code, ok := statusCodes[status]
+	if !ok {
+		code = "error"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg, "code": code})
+}
 
 // Logger logs each request.
 func Logger(next http.Handler) http.Handler {
@@ -25,9 +48,7 @@ func APIKey(expected string, next http.Handler) http.Handler {
 			return
 		}
 		if r.Header.Get("X-API-Key") != expected {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -106,6 +106,13 @@ func TestGetJob_NotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["code"] != "not_found" || body["error"] == "" {
+		t.Fatalf("expected {error,code:not_found}, got %v", body)
+	}
 }
 
 func TestCreateJob_IdempotentReplay(t *testing.T) {

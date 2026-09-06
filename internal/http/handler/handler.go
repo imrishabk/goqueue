@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/imrishabk/goqueue/internal/http/middleware"
 	"github.com/imrishabk/goqueue/internal/model"
 	"github.com/imrishabk/goqueue/internal/store"
 )
@@ -173,20 +174,20 @@ type createJobRequest struct {
 func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 	var req createJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if strings.TrimSpace(req.Type) == "" {
-		http.Error(w, `{"error":"type is required"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "type is required")
 		return
 	}
 	if len(req.Payload) == 0 || string(req.Payload) == "null" {
-		http.Error(w, `{"error":"payload is required"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "payload is required")
 		return
 	}
 	var js json.RawMessage
 	if err := json.Unmarshal(req.Payload, &js); err != nil {
-		http.Error(w, `{"error":"payload must be valid json"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "payload must be valid json")
 		return
 	}
 
@@ -197,14 +198,14 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 	maxAttempts := int16(3)
 	if req.MaxAttempts != nil {
 		if *req.MaxAttempts <= 0 {
-			http.Error(w, `{"error":"max_attempts must be > 0"}`, http.StatusBadRequest)
+			middleware.WriteError(w, http.StatusBadRequest, "max_attempts must be > 0")
 			return
 		}
 		maxAttempts = *req.MaxAttempts
 	}
 	scheduledAt, err := parseScheduledAt(req.ScheduledAt)
 	if err != nil {
-		http.Error(w, `{"error":"scheduled_at must be RFC3339"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "scheduled_at must be RFC3339")
 		return
 	}
 
@@ -222,7 +223,7 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 	if key := strings.TrimSpace(r.Header.Get("Idempotency-Key")); key != "" {
 		job.IdempotencyKey = &key
 		if existing, err := h.store.GetJobByIdempotencyKey(r.Context(), key); err != nil {
-			http.Error(w, `{"error":"failed to check idempotency key"}`, http.StatusInternalServerError)
+			middleware.WriteError(w, http.StatusInternalServerError, "failed to check idempotency key")
 			return
 		} else if existing != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -243,7 +244,7 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		http.Error(w, `{"error":"failed to create job"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to create job")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -255,16 +256,16 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 	id, err := jobIDFromRequest(r)
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	job, err := h.store.GetJob(r.Context(), id)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get job"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to get job")
 		return
 	}
 	if job == nil {
-		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		middleware.WriteError(w, http.StatusNotFound, "job not found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -283,15 +284,15 @@ type registerWorkerRequest struct {
 func (h *Handler) RegisterWorker(w http.ResponseWriter, r *http.Request) {
 	var req registerWorkerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if strings.TrimSpace(req.ID) == "" {
-		http.Error(w, `{"error":"id is required"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "id is required")
 		return
 	}
 	if strings.TrimSpace(req.Hostname) == "" {
-		http.Error(w, `{"error":"hostname is required"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "hostname is required")
 		return
 	}
 	if req.Capabilities == nil {
@@ -308,7 +309,7 @@ func (h *Handler) RegisterWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := h.store.CreateWorker(r.Context(), worker)
 	if err != nil {
-		http.Error(w, `{"error":"failed to create worker"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to create worker")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -323,17 +324,17 @@ func (h *Handler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		var err error
 		id, err = parseWorkerHeartbeatID(r.URL.Path)
 		if err != nil {
-			http.Error(w, `{"error":"invalid worker id"}`, http.StatusBadRequest)
+			middleware.WriteError(w, http.StatusBadRequest, "invalid worker id")
 			return
 		}
 	}
 	existing, err := h.store.GetWorker(r.Context(), id)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get worker"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to get worker")
 		return
 	}
 	if existing == nil {
-		http.Error(w, `{"error":"worker not found"}`, http.StatusNotFound)
+		middleware.WriteError(w, http.StatusNotFound, "worker not found")
 		return
 	}
 	now := time.Now().UTC()
@@ -343,7 +344,7 @@ func (h *Handler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		LastHeartbeat: &now,
 	})
 	if err != nil {
-		http.Error(w, `{"error":"failed to update worker"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to update worker")
 		return
 	}
 	if updated == nil {
@@ -366,17 +367,17 @@ func (h *Handler) Poll(w http.ResponseWriter, r *http.Request) {
 		var err error
 		id, err = parsePollID(r.URL.Path)
 		if err != nil {
-			http.Error(w, `{"error":"invalid worker id"}`, http.StatusBadRequest)
+			middleware.WriteError(w, http.StatusBadRequest, "invalid worker id")
 			return
 		}
 	}
 	worker, err := h.store.GetWorker(r.Context(), id)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get worker"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to get worker")
 		return
 	}
 	if worker == nil {
-		http.Error(w, `{"error":"worker not found"}`, http.StatusNotFound)
+		middleware.WriteError(w, http.StatusNotFound, "worker not found")
 		return
 	}
 	caps := worker.Capabilities
@@ -385,7 +386,7 @@ func (h *Handler) Poll(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := h.store.ClaimNextJob(r.Context(), id, caps)
 	if err != nil {
-		http.Error(w, `{"error":"failed to claim job"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to claim job")
 		return
 	}
 	if job == nil {
@@ -401,25 +402,25 @@ func (h *Handler) Poll(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CompleteJob(w http.ResponseWriter, r *http.Request) {
 	jobID, err := jobIDFromRequest(r)
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	workerID, err := requireWorkerID(r)
 	if err != nil {
 		if err == errInvalidID {
-			http.Error(w, `{"error":"worker_id is required"}`, http.StatusBadRequest)
+			middleware.WriteError(w, http.StatusBadRequest, "worker_id is required")
 		} else {
-			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+			middleware.WriteError(w, http.StatusBadRequest, "invalid json")
 		}
 		return
 	}
 	job, err := h.store.CompleteJob(r.Context(), jobID, workerID)
 	if err != nil {
-		http.Error(w, `{"error":"failed to complete job"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to complete job")
 		return
 	}
 	if job == nil {
-		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		middleware.WriteError(w, http.StatusNotFound, "job not found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -431,7 +432,7 @@ func (h *Handler) CompleteJob(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) FailJob(w http.ResponseWriter, r *http.Request) {
 	jobID, err := jobIDFromRequest(r)
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var req struct {
@@ -439,20 +440,20 @@ func (h *Handler) FailJob(w http.ResponseWriter, r *http.Request) {
 		Error    string `json:"error"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if strings.TrimSpace(req.WorkerID) == "" {
-		http.Error(w, `{"error":"worker_id is required"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "worker_id is required")
 		return
 	}
 	job, err := h.store.FailJob(r.Context(), jobID, req.WorkerID, req.Error)
 	if err != nil {
-		http.Error(w, `{"error":"failed to fail job"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to fail job")
 		return
 	}
 	if job == nil {
-		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		middleware.WriteError(w, http.StatusNotFound, "job not found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -464,18 +465,18 @@ func (h *Handler) FailJob(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListAttempts(w http.ResponseWriter, r *http.Request) {
 	jobID, err := jobIDFromRequest(r)
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	page, err := parsePagination(r)
 	if err != nil {
-		http.Error(w, `{"error":"invalid pagination"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid pagination")
 		return
 	}
 	filter := store.JobAttemptFilter{JobID: &jobID}
 	attempts, err := h.store.ListJobAttempts(r.Context(), filter, page)
 	if err != nil {
-		http.Error(w, `{"error":"failed to list attempts"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to list attempts")
 		return
 	}
 	if attempts == nil {
@@ -492,24 +493,24 @@ func (h *Handler) ListAttempts(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 	jobID, err := jobIDFromRequest(r)
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	job, err := h.store.GetJob(r.Context(), jobID)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get job"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to get job")
 		return
 	}
 	if job == nil {
-		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		middleware.WriteError(w, http.StatusNotFound, "job not found")
 		return
 	}
 	if job.Status == model.JobStatusRunning {
-		http.Error(w, `{"error":"job is running"}`, http.StatusConflict)
+		middleware.WriteError(w, http.StatusConflict, "job is running")
 		return
 	}
 	if err := h.store.DeleteJob(r.Context(), jobID); err != nil {
-		http.Error(w, `{"error":"failed to delete job"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to delete job")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -526,43 +527,43 @@ type patchJobRequest struct {
 func (h *Handler) PatchJob(w http.ResponseWriter, r *http.Request) {
 	jobID, err := jobIDFromRequest(r)
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var req patchJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Priority == nil && req.MaxAttempts == nil && req.ScheduledAt == nil {
-		http.Error(w, `{"error":"nothing to update"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "nothing to update")
 		return
 	}
 	if req.MaxAttempts != nil && *req.MaxAttempts <= 0 {
-		http.Error(w, `{"error":"max_attempts must be > 0"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "max_attempts must be > 0")
 		return
 	}
 	upd := store.JobUpdate{Priority: req.Priority, MaxAttempts: req.MaxAttempts}
 	if req.ScheduledAt != nil {
 		t, err := parseScheduledAt(req.ScheduledAt)
 		if err != nil {
-			http.Error(w, `{"error":"scheduled_at must be RFC3339"}`, http.StatusBadRequest)
+			middleware.WriteError(w, http.StatusBadRequest, "scheduled_at must be RFC3339")
 			return
 		}
 		upd.ScheduledAt = &t
 	}
 	existing, err := h.store.GetJob(r.Context(), jobID)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get job"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to get job")
 		return
 	}
 	if existing == nil {
-		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		middleware.WriteError(w, http.StatusNotFound, "job not found")
 		return
 	}
 	updated, err := h.store.UpdateJob(r.Context(), jobID, upd)
 	if err != nil {
-		http.Error(w, `{"error":"failed to update job"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to update job")
 		return
 	}
 	if updated == nil {
@@ -578,7 +579,7 @@ func (h *Handler) PatchJob(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.store.Stats(r.Context())
 	if err != nil {
-		http.Error(w, `{"error":"failed to load stats"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to load stats")
 		return
 	}
 	jobs := map[model.JobStatus]int64{
@@ -607,7 +608,7 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListWorkers(w http.ResponseWriter, r *http.Request) {
 	page, err := parsePagination(r)
 	if err != nil {
-		http.Error(w, `{"error":"invalid pagination"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid pagination")
 		return
 	}
 	filter := store.WorkerFilter{}
@@ -617,7 +618,7 @@ func (h *Handler) ListWorkers(w http.ResponseWriter, r *http.Request) {
 	}
 	workers, err := h.store.ListWorkers(r.Context(), filter, page)
 	if err != nil {
-		http.Error(w, `{"error":"failed to list workers"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to list workers")
 		return
 	}
 	if workers == nil {
@@ -632,7 +633,7 @@ func (h *Handler) ListWorkers(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListJobs(w http.ResponseWriter, r *http.Request) {
 	page, err := parsePagination(r)
 	if err != nil {
-		http.Error(w, `{"error":"invalid pagination"}`, http.StatusBadRequest)
+		middleware.WriteError(w, http.StatusBadRequest, "invalid pagination")
 		return
 	}
 
@@ -656,7 +657,7 @@ func (h *Handler) ListJobs(w http.ResponseWriter, r *http.Request) {
 
 	jobs, err := h.store.ListJobs(r.Context(), filter, page)
 	if err != nil {
-		http.Error(w, `{"error":"failed to list jobs"}`, http.StatusInternalServerError)
+		middleware.WriteError(w, http.StatusInternalServerError, "failed to list jobs")
 		return
 	}
 	if jobs == nil {
