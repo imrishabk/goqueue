@@ -155,6 +155,33 @@ func TestFail_BackoffHoldback(t *testing.T) {
 	}
 }
 
+func TestFail_ClosesOpenAttempt(t *testing.T) {
+	// Fail must close the poll-opened attempt row, not insert a second one:
+	// one fail cycle = exactly one attempt row.
+	jobID := uuid.New()
+	openID := uuid.New()
+	fs := &fakeStore{
+		jobs: []model.Job{{ID: jobID, Type: "email", Status: model.JobStatusRunning, MaxAttempts: 3}},
+		attempts: []model.JobAttempt{
+			{ID: openID, JobID: jobID, WorkerID: "w1", StartedAt: time.Now().Add(-time.Second)},
+		},
+	}
+	h := NewHandler(fs)
+	req := httptest.NewRequest(http.MethodPost, "/jobs/"+jobID.String()+"/fail", bytes.NewBufferString(`{"worker_id":"w1","error":"boom"}`))
+	w := httptest.NewRecorder()
+	h.FailJob(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(fs.attempts) != 1 {
+		t.Fatalf("expected 1 attempt row (closed in place), got %d", len(fs.attempts))
+	}
+	got := fs.attempts[0]
+	if got.ID != openID || got.FinishedAt == nil || got.Success || got.Error != "boom" {
+		t.Fatalf("open attempt not closed properly: %+v", got)
+	}
+}
+
 func TestListAttempts(t *testing.T) {
 	jobID := uuid.New()
 	fs := &fakeStore{

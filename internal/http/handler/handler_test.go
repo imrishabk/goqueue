@@ -151,10 +151,23 @@ func (f *fakeStore) FailJob(_ context.Context, jobID uuid.UUID, workerID string,
 		if j.ID == jobID {
 			now := time.Now().UTC()
 			f.jobs[i].AttemptCount++
-			// record attempt
-			f.attempts = append(f.attempts, model.JobAttempt{
-				ID: uuid.New(), JobID: jobID, WorkerID: workerID, StartedAt: now.Add(-time.Second), FinishedAt: timePtr(now), Success: false, Error: errMsg,
-			})
+			// close the poll-opened row so one fail cycle = one row;
+			// fall back to inserting when none is open
+			closed := false
+			for k, a := range f.attempts {
+				if a.JobID == jobID && a.WorkerID == workerID && a.FinishedAt == nil {
+					f.attempts[k].FinishedAt = timePtr(now)
+					f.attempts[k].Success = false
+					f.attempts[k].Error = errMsg
+					closed = true
+					break
+				}
+			}
+			if !closed {
+				f.attempts = append(f.attempts, model.JobAttempt{
+					ID: uuid.New(), JobID: jobID, WorkerID: workerID, StartedAt: now, FinishedAt: timePtr(now), Success: false, Error: errMsg,
+				})
+			}
 			if f.jobs[i].AttemptCount >= f.jobs[i].MaxAttempts {
 				f.jobs[i].Status = model.JobStatusDead
 				f.jobs[i].DeadAt = timePtr(now)

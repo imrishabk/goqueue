@@ -225,6 +225,14 @@ func TestIntegration_CompleteAndBackoffFail(t *testing.T) {
 	if !f1.ScheduledAt.After(now) {
 		t.Fatalf("fail 1 must reschedule with backoff, got %s", f1.ScheduledAt)
 	}
+	// one fail cycle = exactly one attempt row (poll-opened row closed in place)
+	atts, err := st.ListJobAttempts(ctx, JobAttemptFilter{JobID: &j2.ID}, Pagination{})
+	if err != nil {
+		t.Fatalf("attempts: %v", err)
+	}
+	if len(atts) != 1 || atts[0].FinishedAt == nil || atts[0].Success || atts[0].Error != "boom" {
+		t.Fatalf("expected 1 closed attempt with boom, got %+v", atts)
+	}
 	// second fail -> dead (max_attempts=2); call FailJob directly since
 	// backoff rescheduled the job out of the claim window
 	f2, err := st.FailJob(ctx, j2.ID, w, "boom")

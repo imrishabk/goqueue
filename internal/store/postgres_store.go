@@ -371,10 +371,17 @@ func (pg *pgStore) FailJob(ctx context.Context, jobID uuid.UUID, workerID string
 		} else {
 			newStatus = model.JobStatusPending
 		}
-		// Record attempt
-		_, err = tx.Exec(ctx, `INSERT INTO job_attempts (job_id, worker_id, started_at, finished_at, success, error) VALUES ($1, $2, now() - interval '1 second', now(), false, $3)`, jobID, workerID, errorMsg)
+		// Record attempt: close the poll-opened row so one fail cycle = one row.
+		// Falls back to inserting when no open attempt exists (direct API use).
+		tag, err := tx.Exec(ctx, `UPDATE job_attempts SET finished_at = now(), success = false, error = $3 WHERE job_id = $1 AND worker_id = $2 AND finished_at IS NULL`, jobID, workerID, errorMsg)
 		if err != nil {
 			return nil, err
+		}
+		if tag.RowsAffected() == 0 {
+			_, err = tx.Exec(ctx, `INSERT INTO job_attempts (job_id, worker_id, started_at, finished_at, success, error) VALUES ($1, $2, now(), now(), false, $3)`, jobID, workerID, errorMsg)
+			if err != nil {
+				return nil, err
+			}
 		}
 		// Update job: dead-jobs keep scheduled_at; retries are rescheduled with backoff.
 		var updated *model.Job
