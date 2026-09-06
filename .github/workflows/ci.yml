@@ -21,3 +21,29 @@ jobs:
         run: go build ./...
       - name: test
         run: go test ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: distqueue
+          POSTGRES_PASSWORD: distqueue
+          POSTGRES_DB: distqueue
+        ports:
+          - 5462:5432
+        options: >-
+          --health-cmd="pg_isready -U distqueue -d distqueue"
+          --health-interval=5s --health-timeout=2s --health-retries=5
+    env:
+      DATABASE_URL: postgres://distqueue:distqueue@localhost:5462/distqueue?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: migrate
+        run: go run ./executor/migration/migration.go up
+      - name: integration tests
+        run: go test -tags integration ./internal/store/ -v

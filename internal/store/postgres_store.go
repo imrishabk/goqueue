@@ -67,6 +67,17 @@ func NewPGStoreWithConfig(p *pgxpool.Pool, cfg PGConfig) Store {
 	return &pgStore{pool: p, backoff: cfg.Backoff}
 }
 
+// conflictErr maps a unique-violation on an idempotent insert to ErrConflict.
+func conflictErr(job *model.Job, err error) error {
+	if err != nil && job.IdempotencyKey != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrConflict
+		}
+	}
+	return err
+}
+
 // CreateJob registers a new job in the jobs table.
 func (pg *pgStore) CreateJob(ctx context.Context, job *model.Job) (*model.Job, error) {
 	query := `
@@ -84,17 +95,12 @@ func (pg *pgStore) CreateJob(ctx context.Context, job *model.Job) (*model.Job, e
 		job.IdempotencyKey)
 	if err != nil {
 		// Lost an idempotency race: another request inserted this key first.
-		if job.IdempotencyKey != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				return nil, ErrConflict
-			}
-		}
-		return nil, err
+		return nil, conflictErr(job, err)
 	}
+	// NB: pgx reports INSERT errors lazily on first read, so map here too.
 	created, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
 	if err != nil {
-		return nil, err
+		return nil, conflictErr(job, err)
 	}
 	return created, nil
 }
@@ -487,6 +493,16 @@ func (pg *pgStore) Stats(ctx context.Context) (*Stats, error) {
 	}
 	rows.Close()
 	return out, rows.Err()
+}
+
+// DeleteAllForTest wipes jobs/workers/attempts. Test-only isolation helper,
+// deliberately not part of the Store interface.
+func (pg *pgStore) DeleteAllForTest(ctx context.Context) error {
+	if _, err := pg.pool.Exec(ctx, `DELETE FROM jobs`); err != nil {
+		return err
+	}
+	_, err := pg.pool.Exec(ctx, `DELETE FROM workers`)
+	return err
 }
 
 // GetJobAttempt retrieves job attempts.
