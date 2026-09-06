@@ -184,8 +184,18 @@ func (f *fakeStore) FailJob(_ context.Context, jobID uuid.UUID, workerID string,
 }
 
 func (f *fakeStore) ClaimNextJob(_ context.Context, _ string, capabilities []string) (*model.Job, error) {
+	idx, ok := f.bestCandidate(capabilities)
+	if !ok {
+		return nil, nil
+	}
+	f.jobs[idx].Status = model.JobStatusRunning
+	cp := f.jobs[idx]
+	return &cp, nil
+}
+
+// bestCandidate returns the index of the top dispatch candidate without mutating.
+func (f *fakeStore) bestCandidate(capabilities []string) (int, bool) {
 	now := time.Now().UTC()
-	// find candidates
 	var candidates []int
 	for i, j := range f.jobs {
 		if j.Status != model.JobStatusPending {
@@ -209,9 +219,8 @@ func (f *fakeStore) ClaimNextJob(_ context.Context, _ string, capabilities []str
 		candidates = append(candidates, i)
 	}
 	if len(candidates) == 0 {
-		return nil, nil
+		return 0, false
 	}
-	// order by priority DESC, scheduled_at ASC, created_at ASC — use sort.Slice
 	sort.Slice(candidates, func(i, j int) bool {
 		a := f.jobs[candidates[i]]
 		b := f.jobs[candidates[j]]
@@ -223,8 +232,14 @@ func (f *fakeStore) ClaimNextJob(_ context.Context, _ string, capabilities []str
 		}
 		return a.CreatedAt.Before(b.CreatedAt)
 	})
-	idx := candidates[0]
-	f.jobs[idx].Status = model.JobStatusRunning
+	return candidates[0], true
+}
+
+func (f *fakeStore) PeekNextJob(_ context.Context, capabilities []string) (*model.Job, error) {
+	idx, ok := f.bestCandidate(capabilities)
+	if !ok {
+		return nil, nil
+	}
 	cp := f.jobs[idx]
 	return &cp, nil
 }
@@ -320,6 +335,18 @@ func (f *fakeStore) Stats(_ context.Context) (*store.Stats, error) {
 }
 
 func (f *fakeStore) SweepDeadWorkers(_ context.Context, deadBefore time.Time) (int, int, error) {
+	deadIDs, err := f.MarkDeadWorkers(context.Background(), deadBefore)
+	if err != nil {
+		return 0, 0, err
+	}
+	requeued, err := f.RequeueJobsOfWorkers(context.Background(), deadIDs)
+	if err != nil {
+		return 0, 0, err
+	}
+	return len(deadIDs), requeued, nil
+}
+
+func (f *fakeStore) MarkDeadWorkers(_ context.Context, deadBefore time.Time) ([]string, error) {
 	var deadIDs []string
 	for i, w := range f.workers {
 		if w.Status == model.WorkerStatusAlive && w.LastHeartbeat.Before(deadBefore) {
@@ -327,11 +354,12 @@ func (f *fakeStore) SweepDeadWorkers(_ context.Context, deadBefore time.Time) (i
 			deadIDs = append(deadIDs, w.ID)
 		}
 	}
-	if len(deadIDs) == 0 {
-		return 0, 0, nil
-	}
-	deadSet := make(map[string]bool, len(deadIDs))
-	for _, id := range deadIDs {
+	return deadIDs, nil
+}
+
+func (f *fakeStore) RequeueJobsOfWorkers(_ context.Context, workerIDs []string) (int, error) {
+	deadSet := make(map[string]bool, len(workerIDs))
+	for _, id := range workerIDs {
 		deadSet[id] = true
 	}
 	requeued := 0
@@ -357,7 +385,7 @@ func (f *fakeStore) SweepDeadWorkers(_ context.Context, deadBefore time.Time) (i
 			f.attempts[i].Error = "worker died"
 		}
 	}
-	return len(deadIDs), requeued, nil
+	return requeued, nil
 }
 
 var _ store.Store = (*fakeStore)(nil)

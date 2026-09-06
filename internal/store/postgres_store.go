@@ -78,13 +78,18 @@ func conflictErr(job *model.Job, err error) error {
 	return err
 }
 
-// CreateJob registers a new job in the jobs table.
+// CreateJob registers a new job in the jobs table. A Nil ID is generated
+// client-side so callers (e.g. sharded routers) can route before inserting.
 func (pg *pgStore) CreateJob(ctx context.Context, job *model.Job) (*model.Job, error) {
+	if job.ID == uuid.Nil {
+		job.ID = uuid.New()
+	}
 	query := `
-	INSERT INTO jobs (type, payload, status, priority, max_attempts, attempt_count, scheduled_at, idempotency_key)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *;
+	INSERT INTO jobs (id, type, payload, status, priority, max_attempts, attempt_count, scheduled_at, idempotency_key)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *;
 	`
 	rows, err := pg.pool.Query(ctx, query,
+		job.ID,
 		job.Type,
 		job.Payload,
 		job.Status,
@@ -260,6 +265,31 @@ func (pg *pgStore) ListJobs(ctx context.Context, filter JobFilter, page Paginati
 	return jobs, nil
 }
 
+// PeekNextJob returns the top dispatch candidate for capabilities without
+// locking or modifying it, for scatter-gather polling. Nil when none.
+func (pg *pgStore) PeekNextJob(ctx context.Context, capabilities []string) (*model.Job, error) {
+	var query string
+	var args []any
+	if len(capabilities) == 0 {
+		query = `SELECT * FROM jobs WHERE status = 'pending' AND scheduled_at <= now() ` + jobClaimOrderBy + ` LIMIT 1`
+	} else {
+		query = `SELECT * FROM jobs WHERE status = 'pending' AND scheduled_at <= now() AND type = ANY($1) ` + jobClaimOrderBy + ` LIMIT 1`
+		args = []any{capabilities}
+	}
+	rows, err := pg.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	job, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[model.Job])
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return job, nil
+}
+
 // ClaimNextJob atomically claims the next pending job matching capabilities, ordered by priority.
 // Returns nil if no job is available. Uses FOR UPDATE SKIP LOCKED for concurrency.
 func (pg *pgStore) ClaimNextJob(ctx context.Context, workerID string, capabilities []string) (*model.Job, error) {
@@ -404,45 +434,50 @@ func (pg *pgStore) FailJob(ctx context.Context, jobID uuid.UUID, workerID string
 
 // SweepDeadWorkers marks workers alive with last_heartbeat < deadBefore as dead,
 // requeues their running jobs to pending, and closes dangling attempts with error='worker died'.
-// Three tables are touched in one transaction intentionally per spec atomicity; helpers keep each step focused.
 func (pg *pgStore) SweepDeadWorkers(ctx context.Context, deadBefore time.Time) (int, int, error) {
-	tx, err := pg.pool.Begin(ctx)
+	deadIDs, err := pg.MarkDeadWorkers(ctx, deadBefore)
 	if err != nil {
 		return 0, 0, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	deadIDs, err := pg.markDeadWorkers(ctx, tx, deadBefore)
+	requeued, err := pg.RequeueJobsOfWorkers(ctx, deadIDs)
 	if err != nil {
-		return 0, 0, err
-	}
-	if len(deadIDs) == 0 {
-		_ = tx.Commit(ctx)
-		return 0, 0, nil
-	}
-
-	requeued, err := pg.requeueJobsOfDeadWorkers(ctx, tx, deadIDs)
-	if err != nil {
-		return 0, 0, err
-	}
-	if err := pg.closeAttemptsOfDeadWorkers(ctx, tx, deadIDs); err != nil {
-		return 0, 0, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, err
 	}
 	return len(deadIDs), requeued, nil
 }
 
-func (pg *pgStore) markDeadWorkers(ctx context.Context, tx pgx.Tx, deadBefore time.Time) ([]string, error) {
-	rows, err := tx.Query(ctx, `UPDATE workers SET status = 'dead' WHERE status = 'alive' AND last_heartbeat < $1 RETURNING id`, deadBefore)
+// MarkDeadWorkers marks alive workers older than deadBefore as dead.
+func (pg *pgStore) MarkDeadWorkers(ctx context.Context, deadBefore time.Time) ([]string, error) {
+	rows, err := pg.pool.Query(ctx, `UPDATE workers SET status = 'dead' WHERE status = 'alive' AND last_heartbeat < $1 RETURNING id`, deadBefore)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
+// RequeueJobsOfWorkers requeues running jobs owned by workerIDs and closes
+// their open attempts, without touching attempt counts.
+func (pg *pgStore) RequeueJobsOfWorkers(ctx context.Context, workerIDs []string) (int, error) {
+	if len(workerIDs) == 0 {
+		return 0, nil
+	}
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	requeued, err := pg.requeueJobsOfDeadWorkers(ctx, tx, workerIDs)
+	if err != nil {
+		return 0, err
+	}
+	if err := pg.closeAttemptsOfDeadWorkers(ctx, tx, workerIDs); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return requeued, nil
+}
 func (pg *pgStore) requeueJobsOfDeadWorkers(ctx context.Context, tx pgx.Tx, deadIDs []string) (int, error) {
 	tag, err := tx.Exec(ctx, `
 		UPDATE jobs SET status = 'pending', updated_at = now()

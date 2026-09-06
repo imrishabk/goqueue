@@ -67,6 +67,9 @@ type JobReader interface {
 	GetJob(ctx context.Context, jobID uuid.UUID) (*model.Job, error)
 	GetJobByIdempotencyKey(ctx context.Context, key string) (*model.Job, error)
 	ListJobs(ctx context.Context, filter JobFilter, page Pagination) ([]model.Job, error)
+	// PeekNextJob returns the top dispatch candidate for capabilities without
+	// locking or changing it (scatter-gather polling across shards).
+	PeekNextJob(ctx context.Context, capabilities []string) (*model.Job, error)
 }
 
 type JobUpdater interface {
@@ -134,6 +137,12 @@ type WorkerStore interface {
 
 type WorkerLiveness interface {
 	SweepDeadWorkers(ctx context.Context, deadBefore time.Time) (deadWorkers int, requeuedJobs int, err error)
+	// MarkDeadWorkers marks alive workers older than deadBefore as dead and
+	// returns their IDs (phase 1 of a cluster-wide sweep).
+	MarkDeadWorkers(ctx context.Context, deadBefore time.Time) ([]string, error)
+	// RequeueJobsOfWorkers requeues running jobs owned by the given workers
+	// and closes their open attempts (phase 2, fanned out to every shard).
+	RequeueJobsOfWorkers(ctx context.Context, workerIDs []string) (int, error)
 }
 
 // Stats is an aggregate snapshot for the /stats endpoint.

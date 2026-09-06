@@ -76,6 +76,7 @@ curl -X POST localhost:8080/jobs/<id>/complete -d '{"worker_id":"w1"}'
 | Var | Default | Used by |
 | --- | ------- | ------- |
 | `DATABASE_URL` | — (required) | coordinator, migration |
+| `SHARD_DATABASE_URLS` | empty (= `DATABASE_URL`) | coordinator, migration |
 | `PORT` | `:8080` | coordinator |
 | `BACKOFF_BASE` / `BACKOFF_CAP` | `5s` / `10m` | coordinator |
 | `API_KEY` | empty (open) | coordinator, worker |
@@ -87,7 +88,7 @@ curl -X POST localhost:8080/jobs/<id>/complete -d '{"worker_id":"w1"}'
 
 ```bash
 go test ./...                                    # unit (DB-free fakes + httptest)
-DATABASE_URL=... go test -tags integration ./internal/store/   # real Postgres
+DATABASE_URL=... DATABASE_URL_2=... go test -p 1 -tags integration ./internal/store/ ./internal/shard/   # real Postgres (-p 1: packages share DBs)
 ```
 
 CI (`.github/workflows/ci.yml`) runs `gofmt`, `go vet`, build, unit tests, plus
@@ -98,4 +99,20 @@ migrations + the integration suite against a Postgres service.
 MVP (enqueue/dispatch/retry/sweep) + V2 (backoff, cancel/update, idempotency,
 handler registry, auth, stats) are implemented and covered. Deliberately out of
 scope: exactly-once delivery, auth beyond a shared key, rate limiting,
-metrics/tracing, horizontal sharding, dashboard UI.
+metrics/tracing, dashboard UI.
+
+## Sharding
+
+Set `SHARD_DATABASE_URLS` to a comma-separated list of Postgres DSNs to shard
+across N databases (empty = single `DATABASE_URL`, unchanged behavior).
+Routing is hash-modulo behind `store.Store`, so the HTTP contract is identical:
+
+- jobs by `hash(jobID) % N`; keyed jobs by `hash(idempotencyKey) % N` (replays
+  route to the same shard); workers by `hash(workerID) % N`.
+- Poll peeks every shard's local top-1 and claims on the winner only, so
+  cross-shard priority order is approximate under contention.
+- The sweep marks dead workers per shard, then requeues their jobs on *all*
+  shards (claims may live anywhere).
+- Lists merge per-shard pages (approximate across shards); stats are summed.
+- Run migrations against every shard: the migration tool loops `SHARD_DATABASE_URLS`.
+- Changing N rehashes everything: resharding is offline (drain, migrate, switch).

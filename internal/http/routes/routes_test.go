@@ -139,6 +139,15 @@ func (f *fakeStore) UpdateWorker(_ context.Context, id string, upd store.WorkerU
 	return nil, nil
 }
 func (f *fakeStore) DeleteWorker(_ context.Context, _ string) error { return nil }
+func (f *fakeStore) PeekNextJob(_ context.Context, _ []string) (*model.Job, error) {
+	return nil, nil
+}
+func (f *fakeStore) MarkDeadWorkers(_ context.Context, _ time.Time) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeStore) RequeueJobsOfWorkers(_ context.Context, _ []string) (int, error) {
+	return 0, nil
+}
 func (f *fakeStore) Stats(_ context.Context) (*store.Stats, error) {
 	out := &store.Stats{
 		Jobs:    make(map[model.JobStatus]int64),

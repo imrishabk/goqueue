@@ -38,12 +38,15 @@ jobs:
           --health-interval=5s --health-timeout=2s --health-retries=5
     env:
       DATABASE_URL: postgres://distqueue:distqueue@localhost:5462/distqueue?sslmode=disable
+      DATABASE_URL_2: postgres://distqueue:distqueue@localhost:5462/distqueue2?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: migrate
-        run: go run ./executor/migration/migration.go up
-      - name: integration tests
-        run: go test -tags integration ./internal/store/ -v
+      - name: create second shard DB
+        run: psql "$DATABASE_URL" -c 'CREATE DATABASE distqueue2;'
+      - name: migrate all shards (also exercises the multi-DB loop)
+        run: SHARD_DATABASE_URLS="$DATABASE_URL,$DATABASE_URL_2" go run ./executor/migration/migration.go up
+      - name: integration tests (packages share DBs, so -p 1)
+        run: go test -p 1 -tags integration ./internal/store/ ./internal/shard/ -v

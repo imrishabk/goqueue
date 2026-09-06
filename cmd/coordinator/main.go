@@ -14,6 +14,7 @@ import (
 	"github.com/imrishabk/goqueue/internal/http/handler"
 	"github.com/imrishabk/goqueue/internal/http/middleware"
 	"github.com/imrishabk/goqueue/internal/http/routes"
+	"github.com/imrishabk/goqueue/internal/shard"
 	"github.com/imrishabk/goqueue/internal/store"
 	"github.com/joho/godotenv"
 )
@@ -24,20 +25,29 @@ func init() {
 }
 
 func main() {
-	connString := os.Getenv("DATABASE_URL")
-	if connString == "" {
-		log.Fatal("DATABASE_URL not set")
+	dsns := shard.DSNs()
+	if len(dsns) == 0 || dsns[0] == "" {
+		log.Fatal("DATABASE_URL (or SHARD_DATABASE_URLS) not set")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	pool, err := database.NewPool(ctx, connString)
-	if err != nil {
-		log.Fatal("failed to establish a database pool:", err)
+	var shards []store.Store
+	for _, dsn := range dsns {
+		pool, err := database.NewPool(ctx, dsn)
+		if err != nil {
+			log.Fatal("failed to establish a database pool:", err)
+		}
+		defer pool.Close()
+		shards = append(shards, store.NewPGStoreWithConfig(pool, store.PGConfig{Backoff: backoffPolicyFromEnv()}))
 	}
-	defer pool.Close()
 
-	st := store.NewPGStoreWithConfig(pool, store.PGConfig{Backoff: backoffPolicyFromEnv()})
+	// Single URL behaves exactly as before; multiple URLs shard by job ID hash.
+	var st store.Store = shards[0]
+	if len(shards) > 1 {
+		st = shard.NewClusterStore(shards)
+		log.Printf("sharding across %d databases", len(shards))
+	}
 	h := handler.NewHandler(st)
 	router := routes.NewRouter(h)
 
